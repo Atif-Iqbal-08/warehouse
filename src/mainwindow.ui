@@ -1,0 +1,920 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="windowTitle">
+   <string>Warehouse SKU and QR Code Manager</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="mainLayout">
+    <item>
+     <widget class="QTabWidget" name="mainTabWidget">
+      <widget class="QWidget" name="dashboardTab">
+       <attribute name="title">
+        <string>Dashboard</string>
+       </attribute>
+       <layout class="QVBoxLayout" name="dashboardLayout">
+        <item>
+         <layout class="QHBoxLayout" name="dashboardLogoLayout">
+          <item>
+           <widget class="QLabel" name="companyLogoLabel">
+            <property name="text">
+             <string>Logo</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <layout class="QVBoxLayout" name="companyInfoLayout">
+            <item>
+             <widget class="QLabel" name="softwareNameLabel">
+              <property name="text">
+               <string>Warehouse SKU and QR Code Manager</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="companyNameLabel">
+              <property name="text">
+               <string>Skylark Drones Pvt. Ltd</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="authorLabel">
+              <property name="text">
+               <string>Author: Atif Iqbal</string>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <spacer name="dashboardLogoSpacer">
+            <property name="orientation">
+             <enum>Qt::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <widget class="QGroupBox" name="metricsGroupBox">
+          <property name="title">
+           <string>Warehouse Metrics</string>
+          </property>
+          <layout class="QGridLayout" name="metricsGridLayout">
+           <item row="0" column="0">
+            <widget class="QLabel" name="totalSkusLabel">
+             <property name="text">
+              <string>Total SKUs</string>
+             </property>
+            </widget>
+           </item>
+           <item row="0" column="1">
+            <widget class="QLabel" name="totalSkusValueLabel">
+             <property name="text">
+              <string>0</string>
+             </property>
+            </widget>
+           </item>
+           <item row="1" column="0">
+            <widget class="QLabel" name="totalBarcodesLabel">
+             <property name="text">
+              <string>Total Serial Numbers</string>
+             </property>
+            </widget>
+           </item>
+           <item row="1" column="1">
+            <widget class="QLabel" name="totalBarcodesValueLabel">
+             <property name="text">
+              <string>0</string>
+             </property>
+            </widget>
+           </item>
+           <item row="2" column="0">
+            <widget class="QLabel" name="quarterBarcodesLabel">
+             <property name="text">
+              <string>This Quarter Incoming</string>
+             </property>
+            </widget>
+           </item>
+           <item row="2" column="1">
+            <widget class="QLabel" name="quarterBarcodesValueLabel">
+             <property name="text">
+              <string>0</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QGroupBox" name="databaseGroupBox">
+          <property name="title">
+           <string>Database</string>
+          </property>
+          <layout class="QHBoxLayout" name="databaseButtonLayout">
+           <item>
+            <widget class="QPushButton" name="backupDbButton">
+             <property name="text">
+              <string>Backup DB</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="databaseButtonSpacer">
+             <property name="orientation">
+              <enum>Qt::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QGroupBox" name="latestSkuGroupBox">
+          <property name="title">
+           <string>Latest SKUs</string>
+          </property>
+          <layout class="QVBoxLayout" name="latestSkuLayout">
+           <item>
+            <widget class="QScrollArea" name="latestSkuScrollArea">
+             <property name="widgetResizable">
+              <bool>true</bool>
+             </property>
+             <widget class="QWidget" name="latestSkuContainer">
+              <layout class="QGridLayout" name="latestSkuGridLayout"/>
+             </widget>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="skuTab">
+       <attribute name="title">
+        <string>SKU Generation</string>
+       </attribute>
+       <layout class="QHBoxLayout" name="skuTabLayout">
+        <item>
+         <layout class="QVBoxLayout" name="skuLeftLayout">
+          <item>
+           <widget class="QGroupBox" name="searchGroupBox">
+            <property name="title">
+             <string>Search</string>
+            </property>
+            <layout class="QGridLayout" name="searchGridLayout">
+             <item row="0" column="0">
+              <widget class="QLabel" name="searchSkuLabel">
+               <property name="text">
+                <string>SKU</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QLineEdit" name="searchSkuLineEdit"/>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="searchPartNumberLabel">
+               <property name="text">
+                <string>Part Number</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QLineEdit" name="searchPartNumberLineEdit"/>
+             </item>
+             <item row="2" column="0">
+              <widget class="QLabel" name="searchPartNameLabel">
+               <property name="text">
+                <string>Part Name</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="1">
+              <widget class="QLineEdit" name="searchPartNameLineEdit"/>
+             </item>
+             <item row="0" column="2" rowspan="3">
+              <layout class="QVBoxLayout" name="searchButtonLayout">
+               <item>
+                <widget class="QPushButton" name="searchButton">
+                 <property name="text">
+                  <string>Search</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QPushButton" name="clearSearchButton">
+                 <property name="text">
+                  <string>Clear Search</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <widget class="QPushButton" name="fillFromSearchButton">
+                 <property name="text">
+                  <string>Fill From Search</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <spacer name="searchButtonSpacer">
+                 <property name="orientation">
+                  <enum>Qt::Vertical</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>20</width>
+                   <height>20</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+              </layout>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <widget class="QTableView" name="resultsTableView"/>
+          </item>
+          <item>
+           <layout class="QHBoxLayout" name="searchQuantityWordsLayout">
+            <item>
+             <widget class="QLabel" name="searchQuantityWordsLabel">
+              <property name="text">
+               <string>Total Quantity (Words):</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="searchQuantityWordsValueLabel">
+              <property name="text">
+               <string>-</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <spacer name="searchQuantityWordsSpacer">
+              <property name="orientation">
+               <enum>Qt::Horizontal</enum>
+              </property>
+              <property name="sizeHint" stdset="0">
+               <size>
+                <width>40</width>
+                <height>20</height>
+               </size>
+              </property>
+             </spacer>
+            </item>
+           </layout>
+          </item>
+          <item>
+           <widget class="QLabel" name="statusLabel">
+            <property name="text">
+             <string/>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QGroupBox" name="searchImageGroupBox">
+            <property name="title">
+             <string>Image Preview</string>
+            </property>
+            <layout class="QVBoxLayout" name="searchImageLayout">
+             <item>
+              <widget class="QLabel" name="searchImagePreviewLabel">
+               <property name="text">
+                <string>No Image</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <layout class="QVBoxLayout" name="skuRightLayout">
+          <item>
+           <widget class="QGroupBox" name="formGroupBox">
+            <property name="title">
+             <string>SKU Form</string>
+            </property>
+            <layout class="QGridLayout" name="formGridLayout">
+             <item row="0" column="0">
+              <widget class="QLabel" name="skuLabel">
+               <property name="text">
+                <string>SKU</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1" colspan="2">
+              <widget class="QLineEdit" name="skuLineEdit"/>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="partNameLabel">
+               <property name="text">
+                <string>Part Name</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1" colspan="2">
+              <widget class="QLineEdit" name="partNameLineEdit"/>
+             </item>
+             <item row="2" column="0">
+              <widget class="QLabel" name="partNumberLabel">
+               <property name="text">
+                <string>Part Number</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="1" colspan="2">
+              <widget class="QLineEdit" name="partNumberLineEdit"/>
+             </item>
+             <item row="3" column="0">
+              <widget class="QLabel" name="categoryLabel">
+               <property name="text">
+                <string>Category Code</string>
+               </property>
+              </widget>
+             </item>
+             <item row="3" column="1" colspan="2">
+              <widget class="QComboBox" name="categoryComboBox"/>
+             </item>
+             <item row="4" column="0">
+              <widget class="QLabel" name="subCategoryLabel">
+               <property name="text">
+                <string>Sub Category</string>
+               </property>
+              </widget>
+             </item>
+             <item row="4" column="1" colspan="2">
+              <widget class="QComboBox" name="subCategoryComboBox"/>
+             </item>
+             <item row="5" column="0">
+              <widget class="QLabel" name="itemSerialLabel">
+               <property name="text">
+                <string>Item Serial</string>
+               </property>
+              </widget>
+             </item>
+             <item row="5" column="1" colspan="2">
+              <widget class="QSpinBox" name="itemSerialSpinBox"/>
+             </item>
+             <item row="6" column="0">
+              <widget class="QLabel" name="variationLabel">
+               <property name="text">
+                <string>Unique Variation</string>
+               </property>
+              </widget>
+             </item>
+             <item row="6" column="1" colspan="2">
+              <widget class="QSpinBox" name="variationSpinBox"/>
+             </item>
+             <item row="7" column="0">
+              <widget class="QLabel" name="dimensionsLabel">
+               <property name="text">
+                <string>Product Dimensions</string>
+               </property>
+              </widget>
+             </item>
+             <item row="7" column="1" colspan="2">
+              <widget class="QLineEdit" name="dimensionsLineEdit"/>
+             </item>
+             <item row="8" column="0">
+              <widget class="QLabel" name="weightLabel">
+               <property name="text">
+                <string>Product Weight</string>
+               </property>
+              </widget>
+             </item>
+             <item row="8" column="1" colspan="2">
+              <layout class="QHBoxLayout" name="weightLayout">
+               <item>
+                <widget class="QLineEdit" name="weightLineEdit"/>
+               </item>
+               <item>
+                <widget class="QLabel" name="weightUnitLabel">
+                 <property name="text">
+                  <string>kg</string>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </item>
+             <item row="9" column="0">
+              <widget class="QLabel" name="descriptionLabel">
+               <property name="text">
+                <string>Description</string>
+               </property>
+              </widget>
+             </item>
+             <item row="9" column="1" colspan="2">
+              <widget class="QPlainTextEdit" name="descriptionPlainTextEdit"/>
+             </item>
+             <item row="10" column="0">
+              <widget class="QLabel" name="storageLabel">
+               <property name="text">
+                <string>Storage Requirements</string>
+               </property>
+              </widget>
+             </item>
+             <item row="10" column="1" colspan="2">
+              <widget class="QLineEdit" name="storageLineEdit"/>
+             </item>
+             <item row="11" column="0">
+              <widget class="QLabel" name="rackNumberLabel">
+               <property name="text">
+                <string>Rack Number</string>
+               </property>
+              </widget>
+             </item>
+             <item row="11" column="1" colspan="2">
+              <widget class="QLineEdit" name="rackNumberLineEdit"/>
+             </item>
+             <item row="12" column="0">
+              <widget class="QLabel" name="binNumberLabel">
+               <property name="text">
+                <string>Bin Number</string>
+               </property>
+              </widget>
+             </item>
+             <item row="12" column="1" colspan="2">
+              <widget class="QLineEdit" name="binNumberLineEdit"/>
+             </item>
+             <item row="13" column="0">
+              <widget class="QLabel" name="productFamilyLabel">
+               <property name="text">
+                <string>Product Family</string>
+               </property>
+              </widget>
+             </item>
+             <item row="13" column="1" colspan="2">
+              <widget class="QLineEdit" name="productFamilyLineEdit"/>
+             </item>
+             <item row="14" column="0">
+              <widget class="QLabel" name="imagePathLabel">
+               <property name="text">
+                <string>Image</string>
+               </property>
+              </widget>
+             </item>
+             <item row="14" column="1" colspan="2">
+              <layout class="QHBoxLayout" name="imagePathLayout">
+               <item>
+                <widget class="QLineEdit" name="imagePathLineEdit"/>
+               </item>
+               <item>
+                <widget class="QPushButton" name="browseImageButton">
+                 <property name="text">
+                  <string>Browse</string>
+                 </property>
+                </widget>
+               </item>
+              </layout>
+             </item>
+             <item row="15" column="0">
+              <widget class="QLabel" name="commentsLabel">
+               <property name="text">
+                <string>Comments</string>
+               </property>
+              </widget>
+             </item>
+             <item row="15" column="1" colspan="2">
+              <widget class="QPlainTextEdit" name="commentsPlainTextEdit"/>
+             </item>
+             <item row="16" column="0">
+              <widget class="QPushButton" name="clearFormButton">
+               <property name="text">
+                <string>Clear Forms</string>
+               </property>
+              </widget>
+             </item>
+             <item row="16" column="1" colspan="2">
+              <widget class="QPushButton" name="saveButton">
+               <property name="text">
+                <string>Generate SKU and Update List</string>
+               </property>
+              </widget>
+             </item>
+             <item row="17" column="0">
+              <widget class="QPushButton" name="deleteSkuButton">
+               <property name="text">
+                <string>Delete SKU</string>
+               </property>
+              </widget>
+             </item>
+             <item row="17" column="1" colspan="2">
+              <widget class="QPushButton" name="updateButton">
+               <property name="text">
+                <string>Update Selected Record</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="barcodeTab">
+       <attribute name="title">
+        <string>QR Code Generation</string>
+       </attribute>
+       <layout class="QHBoxLayout" name="barcodeTabLayout">
+        <item>
+         <layout class="QVBoxLayout" name="barcodeLeftLayout">
+          <item>
+           <widget class="QGroupBox" name="barcodeGroupBox">
+          <property name="title">
+           <string>Generate QR Codes</string>
+          </property>
+          <layout class="QGridLayout" name="barcodeGridLayout">
+           <item row="0" column="0">
+            <widget class="QLabel" name="barcodeSkuLabel">
+             <property name="text">
+              <string>SKU</string>
+             </property>
+            </widget>
+           </item>
+           <item row="0" column="1" colspan="2">
+            <widget class="QComboBox" name="barcodeSkuComboBox"/>
+           </item>
+           <item row="2" column="0">
+            <widget class="QLabel" name="barcodeQuantityLabel">
+             <property name="text">
+              <string>Quantity</string>
+             </property>
+            </widget>
+           </item>
+           <item row="2" column="1" colspan="2">
+            <widget class="QLineEdit" name="barcodeQuantityLineEdit"/>
+           </item>
+           <item row="3" column="0">
+            <widget class="QLabel" name="barcodeQuarterYearLabel">
+             <property name="text">
+              <string>Current Quarter / Year</string>
+             </property>
+            </widget>
+           </item>
+           <item row="3" column="1">
+            <widget class="QComboBox" name="barcodeQuarterComboBox"/>
+           </item>
+           <item row="3" column="2">
+            <widget class="QComboBox" name="barcodeYearComboBox"/>
+           </item>
+           <item row="4" column="0">
+            <widget class="QLabel" name="barcodeNextSerialLabel">
+             <property name="text">
+              <string>Next Serial</string>
+             </property>
+            </widget>
+           </item>
+           <item row="4" column="1" colspan="2">
+            <widget class="QLineEdit" name="barcodeNextSerialLineEdit"/>
+           </item>
+           <item row="5" column="0">
+            <widget class="QLabel" name="barcodeValueLabel">
+             <property name="text">
+              <string>Last QR Code</string>
+             </property>
+            </widget>
+           </item>
+           <item row="5" column="1" colspan="2">
+            <widget class="QLineEdit" name="barcodeValueLineEdit"/>
+           </item>
+           <item row="6" column="0">
+            <widget class="QLabel" name="barcodePreviewTitleLabel">
+             <property name="text">
+              <string>QR Code Preview</string>
+             </property>
+            </widget>
+           </item>
+           <item row="6" column="1" colspan="2">
+            <widget class="QLabel" name="barcodePreviewLabel">
+             <property name="text">
+              <string>No QR Code</string>
+             </property>
+            </widget>
+           </item>
+           <item row="7" column="1">
+            <widget class="QPushButton" name="generateBarcodeButton">
+             <property name="text">
+              <string>Generate QR Codes</string>
+             </property>
+            </widget>
+           </item>
+           <item row="7" column="2">
+            <widget class="QPushButton" name="clearBarcodeFieldsButton">
+             <property name="text">
+              <string>Clear Fields</string>
+             </property>
+            </widget>
+           </item>
+           <item row="8" column="1" colspan="2">
+            <widget class="QPushButton" name="printBarcodeButton">
+             <property name="text">
+              <string>Export QR Codes (PDF)</string>
+             </property>
+            </widget>
+           </item>
+           <item row="9" column="1" colspan="2">
+            <widget class="QPushButton" name="deleteBarcodeButton">
+             <property name="text">
+              <string>Delete Selected Serials</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+           </widget>
+          </item>
+          <item>
+           <widget class="QGroupBox" name="barcodeSkuDetailsGroupBox">
+          <property name="title">
+           <string>SKU Details</string>
+          </property>
+          <layout class="QHBoxLayout" name="barcodeSkuDetailsLayout">
+           <item>
+            <widget class="QLabel" name="barcodeSkuImageLabel">
+             <property name="text">
+              <string>No Image</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <layout class="QGridLayout" name="barcodeSkuDetailsGrid">
+             <item row="0" column="0">
+              <widget class="QLabel" name="barcodeSkuDetailsPartNameLabel">
+               <property name="text">
+                <string>Part Name</string>
+               </property>
+              </widget>
+             </item>
+             <item row="0" column="1">
+              <widget class="QLabel" name="barcodePartNameValueLabel">
+               <property name="text">
+                <string>-</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="0">
+              <widget class="QLabel" name="barcodeSkuDetailsPartNumberLabel">
+               <property name="text">
+                <string>Part Number</string>
+               </property>
+              </widget>
+             </item>
+             <item row="1" column="1">
+              <widget class="QLabel" name="barcodePartNumberValueLabel">
+               <property name="text">
+                <string>-</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="0">
+              <widget class="QLabel" name="barcodeQuantityWordsLabelTitle">
+               <property name="text">
+                <string>Total Quantity</string>
+               </property>
+              </widget>
+             </item>
+             <item row="2" column="1">
+              <widget class="QLabel" name="barcodeQuantityWordsValueLabel">
+               <property name="text">
+                <string>-</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+          </layout>
+         </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <widget class="QTableView" name="barcodeTableView"/>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="barcodeHistoryTab">
+       <attribute name="title">
+        <string>QR Code Manager</string>
+       </attribute>
+       <layout class="QHBoxLayout" name="historyTabLayout">
+        <item>
+         <widget class="QGroupBox" name="historySkuGroupBox">
+          <property name="title">
+           <string>SKU Selection</string>
+          </property>
+          <layout class="QGridLayout" name="historySkuGridLayout">
+           <item row="0" column="0">
+            <widget class="QLabel" name="historySkuLabel">
+             <property name="text">
+              <string>SKU</string>
+             </property>
+            </widget>
+           </item>
+           <item row="0" column="1">
+            <widget class="QComboBox" name="historySkuComboBox"/>
+           </item>
+           <item row="1" column="0">
+            <widget class="QLabel" name="historySerialSearchLabel">
+             <property name="text">
+              <string>Serial Search</string>
+             </property>
+            </widget>
+           </item>
+           <item row="1" column="1">
+            <widget class="QLineEdit" name="historySerialSearchLineEdit"/>
+           </item>
+           <item row="2" column="0" colspan="2">
+            <widget class="QPushButton" name="historyRefreshButton">
+             <property name="text">
+              <string>Load History</string>
+             </property>
+            </widget>
+           </item>
+           <item row="3" column="0" colspan="2">
+            <widget class="QPushButton" name="historyEditButton">
+             <property name="text">
+              <string>Edit Selected Serial</string>
+             </property>
+            </widget>
+           </item>
+           <item row="4" column="0" colspan="2">
+            <widget class="QPushButton" name="historyDeleteButton">
+             <property name="text">
+              <string>Delete Selected Serials</string>
+             </property>
+            </widget>
+           </item>
+           <item row="5" column="0" colspan="2">
+            <widget class="QPushButton" name="historyClearFieldsButton">
+             <property name="text">
+              <string>Clear Fields</string>
+             </property>
+            </widget>
+           </item>
+           <item row="6" column="0" colspan="2">
+            <widget class="QGroupBox" name="historySkuDetailsGroupBox">
+             <property name="title">
+              <string>SKU Details</string>
+             </property>
+             <layout class="QHBoxLayout" name="historySkuDetailsLayout">
+              <item>
+               <widget class="QLabel" name="historySkuImageLabel">
+                <property name="text">
+                 <string>No Image</string>
+                </property>
+               </widget>
+              </item>
+              <item>
+               <layout class="QGridLayout" name="historySkuDetailsGridLayout">
+                <item row="0" column="0">
+                 <widget class="QLabel" name="historySkuPartNameLabel">
+                  <property name="text">
+                   <string>Part Name</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="0" column="1">
+                 <widget class="QLabel" name="historySkuPartNameValueLabel">
+                  <property name="text">
+                   <string>-</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="0">
+                 <widget class="QLabel" name="historySkuPartNumberLabel">
+                  <property name="text">
+                   <string>Part Number</string>
+                  </property>
+                 </widget>
+                </item>
+                <item row="1" column="1">
+                 <widget class="QLabel" name="historySkuPartNumberValueLabel">
+                  <property name="text">
+                   <string>-</string>
+                  </property>
+                 </widget>
+                </item>
+               </layout>
+              </item>
+             </layout>
+            </widget>
+           </item>
+           <item row="7" column="0" colspan="2">
+            <widget class="QGroupBox" name="historyBarcodeDetailsGroupBox">
+             <property name="title">
+              <string>QR Code Details</string>
+             </property>
+             <layout class="QGridLayout" name="historyBarcodeDetailsLayout">
+              <item row="0" column="0">
+               <widget class="QLabel" name="historyBarcodeLabel">
+                <property name="text">
+                 <string>QR Code</string>
+                </property>
+               </widget>
+              </item>
+              <item row="0" column="1">
+               <widget class="QLabel" name="historyBarcodeValueLabel">
+                <property name="text">
+                 <string>-</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="0">
+               <widget class="QLabel" name="historySerialLabel">
+                <property name="text">
+                 <string>Serial</string>
+                </property>
+               </widget>
+              </item>
+              <item row="1" column="1">
+               <widget class="QLabel" name="historySerialValueLabel">
+                <property name="text">
+                 <string>-</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="0">
+               <widget class="QLabel" name="historyDateLabel">
+                <property name="text">
+                 <string>Date</string>
+                </property>
+               </widget>
+              </item>
+              <item row="2" column="1">
+               <widget class="QLabel" name="historyDateValueLabel">
+                <property name="text">
+                 <string>-</string>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="0">
+               <widget class="QLabel" name="historyQuarterLabel">
+                <property name="text">
+                 <string>Quarter</string>
+                </property>
+               </widget>
+              </item>
+              <item row="3" column="1">
+               <widget class="QLabel" name="historyQuarterValueLabel">
+                <property name="text">
+                 <string>-</string>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="0">
+               <widget class="QLabel" name="historyYearLabel">
+                <property name="text">
+                 <string>Year</string>
+                </property>
+               </widget>
+              </item>
+              <item row="4" column="1">
+               <widget class="QLabel" name="historyYearValueLabel">
+                <property name="text">
+                 <string>-</string>
+                </property>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+           </item>
+          </layout>
+         </widget>
+        </item>
+        <item>
+         <widget class="QTableView" name="historyTableView"/>
+        </item>
+       </layout>
+      </widget>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
+
+
+
