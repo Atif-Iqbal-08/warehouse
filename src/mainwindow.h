@@ -30,6 +30,7 @@ class QAction;
 class QTableWidget;
 class QEvent;
 class QCloseEvent;
+class QTimer;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -81,6 +82,7 @@ private slots:
     void onThemeDark();
     void onThemeLight();
     void onThemeSystem();
+    void onHelpGuidesTriggered();
     void onPrintSettingsTriggered();
     void onManageUsersTriggered();
     void onSwitchUserTriggered();
@@ -102,8 +104,12 @@ private:
         bool canAdd = false;
         bool canEdit = false;
         bool canDelete = false;
+        bool canSerialEdit = false;
+        bool canSerialDelete = false;
         bool canPrint = false;
         bool canManageUsers = false;
+        bool canBackupRestore = false;
+        bool canExport = false;
     };
 
     void setupUi();
@@ -141,6 +147,7 @@ private:
     void showUserAccountsDialog();
     void loadUsersIntoTable(QTableWidget *table);
     void showSkuDetailsDialog(const QString &sku);
+    void showHelpGuidesDialog();
     bool selectDatabaseOnStartup();
     bool promptAdminAuthorization(const QString &action, QString *commentOut, bool requireComment);
     bool verifyAdminCredentials(const QString &username, const QString &password);
@@ -148,7 +155,43 @@ private:
                    const QString &entity,
                    const QString &oldValue,
                    const QString &newValue,
-                   const QString &comment);
+                   const QString &comment,
+                   const QString &module = QString(),
+                   const QString &actionType = QString(),
+                   bool success = true,
+                   const QString &errorMessage = QString(),
+                   const QString &recordId = QString());
+    bool applyRolePolicy(const QString &roleKey, AccessPolicy *policyOut) const;
+    bool applyUserOverrides(const QString &username, AccessPolicy *policy) const;
+    bool upsertRolePermissions(const QString &roleKey, const AccessPolicy &policy);
+    QString rolePolicySummary(const AccessPolicy &policy) const;
+    AccessPolicy rolePolicyFor(const QString &roleKey) const;
+    bool hasPermissionOverride(const QString &username) const;
+    bool upsertUserPermissionOverride(const QString &username, const AccessPolicy *policy);
+    QString machineId() const;
+    bool isStrongPassword(const QString &password, QString *reasonOut = nullptr) const;
+    bool isPermissionDeniedOpenError(const QString &errorText) const;
+    bool requestUacElevationForDatabase(const QString &dbPath, const QString &errorText);
+    void appendRunLogWithUser(const QString &message) const;
+    void registerUiInteractionLogging();
+    bool importBootstrapAdminFromSettings();
+    QString configuredBackupRoot() const;
+    QString automatedBackupFilePath(const QString &classification) const;
+    bool createEncryptedBackup(const QString &sourcePath,
+                               const QString &targetPath,
+                               QString *checksumOut,
+                               qint64 *sizeOut,
+                               QString *metadataOut,
+                               QString *errorOut);
+    bool restoreEncryptedBackup(const QString &sourcePath,
+                                const QString &targetPath,
+                                QString *errorOut);
+    bool pruneBackupRetention(const QString &backupRoot, QString *errorOut = nullptr);
+    void scheduleAutomatedBackups();
+    void evaluateAutomatedBackupWindow();
+    void scheduleNextBackupTick();
+    bool shouldRunBootFallback() const;
+    bool runAutomatedBackup(const QString &trigger, bool silent);
     int totalQuantityForSku(const QString &sku) const;
     QString numberToWords(int value) const;
     void updateQuantityWordsLabels(const QString &sku);
@@ -178,13 +221,17 @@ protected:
     void updateSerialsAndSku(bool resetVariation);
     void updateSkuPreview();
     QString currentSkuValue() const;
+    QString selectedBarcodePrefix() const;
+    QString barcodePrefixFromValue(const QString &barcodeValue) const;
     void updateNextBarcodeSerial();
-    QString buildBarcodeValue(const QString &sku, int serial, int year, int quarter) const;
+    QString buildBarcodeValue(const QString &sku, int serial, int year, int quarter, const QString &prefix) const;
     int fetchLastBarcodeSerial(const QString &sku, int year, int quarter) const;
     int currentQuarter() const;
     int currentYear() const;
     int selectedBarcodeQuarter() const;
     int selectedBarcodeYear() const;
+    QString stickerWebsiteForPrefix(const QString &prefix) const;
+    QImage stickerLogoForPrefix(const QString &prefix) const;
     bool skuExists(const QString &sku) const;
     void loadSkuList(const QString &filter = QString(), bool preserveText = false);
     QImage renderQrCode(const QString &value) const;
@@ -213,6 +260,7 @@ protected:
     QString getVariationCode(int num) const;
 
     void setStatus(const QString &message, bool ok);
+    void updateNoDbBanner();
     void populateResultsModel(const QList<QStringList> &rows);
     void loadImagePreview(const QByteArray &data, const QString &legacyPath = QString());
     void loadImageForSelectedId(int id);
@@ -234,6 +282,7 @@ protected:
     QStandardItemModel *m_resultsModel = nullptr;
 
     QLabel *m_statusLabel = nullptr;
+    QLabel *m_noDbBannerLabel = nullptr;
 
     QLineEdit *m_skuField = nullptr;
     QLineEdit *m_partNameField = nullptr;
@@ -291,6 +340,7 @@ protected:
     QLabel *m_historyYearValueLabel = nullptr;
 
     QComboBox *m_barcodeSkuCombo = nullptr;
+    QComboBox *m_barcodePrefixCombo = nullptr;
     QLineEdit *m_barcodeQuantityField = nullptr;
     QLineEdit *m_barcodeNextSerialField = nullptr;
     QLineEdit *m_barcodeValueField = nullptr;
@@ -310,6 +360,7 @@ protected:
     QImage m_barcodeImage;
     QStringList m_lastGeneratedBarcodes;
     QString m_customDbPath;
+    QString m_lastDatabaseOpenError;
     QString m_darkStyleSheet;
     QString m_lightStyleSheet;
     Theme m_currentTheme = Theme::Dark;
@@ -332,12 +383,17 @@ protected:
     QAction *m_actionManageUsers = nullptr;
     QAction *m_actionSwitchUser = nullptr;
     QAction *m_actionSettings = nullptr;
+    QAction *m_actionHelpGuides = nullptr;
 
     int m_selectedId = 0;
     QString m_currentUsername;
+    QString m_currentUserId;
+    QString m_currentUserFullName;
     QString m_currentRoleKey;
     UserRole m_currentBaseRole = UserRole::FullAccess;
     AccessPolicy m_access;
+    bool m_relaunchingElevated = false;
+    QTimer *m_autoBackupTimer = nullptr;
 };
 
 #endif // MAINWINDOW_H
