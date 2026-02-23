@@ -4,6 +4,7 @@
 
 namespace AppGlobals {
 inline QString appName() { return QStringLiteral("Warehouse SKU Generator"); }
+inline QString appVersion() { return QStringLiteral("1.0.0"); }
 inline QString organizationName() { return QStringLiteral("Skylark Drones"); }
 
 inline QString dataFolderName() { return QStringLiteral("data"); }

@@ -28,6 +28,7 @@ class QWidget;
 class QPoint;
 class QAction;
 class QTableWidget;
+class QGroupBox;
 class QEvent;
 class QCloseEvent;
 class QTimer;
@@ -74,6 +75,7 @@ private slots:
     void onTabChanged(int index);
     void onBarcodePeriodChanged();
     void onLoadDbTriggered();
+    void onRestoreBackupTriggered();
     void onExportDbTriggered();
     void onSaveDbTriggered();
     void onBackupDbClicked();
@@ -83,6 +85,7 @@ private slots:
     void onThemeLight();
     void onThemeSystem();
     void onHelpGuidesTriggered();
+    void onSkuReferenceTriggered();
     void onPrintSettingsTriggered();
     void onManageUsersTriggered();
     void onSwitchUserTriggered();
@@ -148,6 +151,7 @@ private:
     void loadUsersIntoTable(QTableWidget *table);
     void showSkuDetailsDialog(const QString &sku);
     void showHelpGuidesDialog();
+    void showSkuReferenceDialog();
     bool selectDatabaseOnStartup();
     bool promptAdminAuthorization(const QString &action, QString *commentOut, bool requireComment);
     bool verifyAdminCredentials(const QString &username, const QString &password);
@@ -172,9 +176,9 @@ private:
     bool isStrongPassword(const QString &password, QString *reasonOut = nullptr) const;
     bool isPermissionDeniedOpenError(const QString &errorText) const;
     bool requestUacElevationForDatabase(const QString &dbPath, const QString &errorText);
+    void syncRunLogIdentity();
     void appendRunLogWithUser(const QString &message) const;
     void registerUiInteractionLogging();
-    bool importBootstrapAdminFromSettings();
     QString configuredBackupRoot() const;
     QString automatedBackupFilePath(const QString &classification) const;
     bool createEncryptedBackup(const QString &sourcePath,
@@ -186,6 +190,7 @@ private:
     bool restoreEncryptedBackup(const QString &sourcePath,
                                 const QString &targetPath,
                                 QString *errorOut);
+    void runEncryptedRestoreFlow(const QString &sourcePath, bool startupWithoutDb);
     bool pruneBackupRetention(const QString &backupRoot, QString *errorOut = nullptr);
     void scheduleAutomatedBackups();
     void evaluateAutomatedBackupWindow();
@@ -282,6 +287,8 @@ protected:
     QStandardItemModel *m_resultsModel = nullptr;
 
     QLabel *m_statusLabel = nullptr;
+    QLabel *m_statusBarMessageLabel = nullptr;
+    QLabel *m_statusBarVersionLabel = nullptr;
     QLabel *m_noDbBannerLabel = nullptr;
 
     QLineEdit *m_skuField = nullptr;
@@ -314,6 +321,9 @@ protected:
     QLabel *m_totalSkusValueLabel = nullptr;
     QLabel *m_totalBarcodesValueLabel = nullptr;
     QLabel *m_quarterBarcodesValueLabel = nullptr;
+    QLabel *m_sdSerialsValueLabel = nullptr;
+    QLabel *m_skSerialsValueLabel = nullptr;
+    QLabel *m_smSerialsValueLabel = nullptr;
     QLabel *m_companyLogoLabel = nullptr;
     QLabel *m_companyNameLabel = nullptr;
     QLabel *m_softwareNameLabel = nullptr;
@@ -350,6 +360,7 @@ protected:
     QLabel *m_barcodePartNumberValueLabel = nullptr;
     QLabel *m_barcodeQuantityWordsValueLabel = nullptr;
     QLabel *m_barcodeSkuImageLabel = nullptr;
+    QGroupBox *m_barcodeSkuDetailsGroupBox = nullptr;
     QLabel *m_barcodePreview = nullptr;
     QPushButton *m_generateBarcodeButton = nullptr;
     QPushButton *m_clearBarcodeFieldsButton = nullptr;
@@ -359,6 +370,7 @@ protected:
     QStandardItemModel *m_barcodeModel = nullptr;
     QImage m_barcodeImage;
     QStringList m_lastGeneratedBarcodes;
+    bool m_refreshingLatestSkuCards = false;
     QString m_customDbPath;
     QString m_lastDatabaseOpenError;
     QString m_darkStyleSheet;
@@ -370,6 +382,7 @@ protected:
     QString m_legacyImagePath;
 
     QAction *m_actionLoadDb = nullptr;
+    QAction *m_actionRestoreBackup = nullptr;
     QAction *m_actionExportDb = nullptr;
     QAction *m_actionSaveDb = nullptr;
     QAction *m_actionExportSkuCsv = nullptr;
@@ -384,6 +397,7 @@ protected:
     QAction *m_actionSwitchUser = nullptr;
     QAction *m_actionSettings = nullptr;
     QAction *m_actionHelpGuides = nullptr;
+    QAction *m_actionSkuReference = nullptr;
 
     int m_selectedId = 0;
     QString m_currentUsername;
