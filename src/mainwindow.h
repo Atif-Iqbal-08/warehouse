@@ -243,6 +243,7 @@ protected:
     void populateBarcodeModel(const QList<QStringList> &rows);
     void updateDashboardMetrics();
     void refreshLatestSkuCards();
+    void scheduleLatestSkuCardsRefresh(int delayMs = 0);
     void updateBarcodeSkuDetails();
     void loadBarcodeSkuImage(const QByteArray &data, const QString &legacyPath);
     void updateHistorySkuDetails();
@@ -407,6 +408,7 @@ protected:
     UserRole m_currentBaseRole = UserRole::FullAccess;
     AccessPolicy m_access;
     bool m_relaunchingElevated = false;
+    QTimer *m_latestSkuRefreshTimer = nullptr;
     QTimer *m_autoBackupTimer = nullptr;
 };
 

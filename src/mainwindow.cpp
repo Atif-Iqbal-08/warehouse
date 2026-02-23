@@ -39,7 +39,6 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QAction>
-#include <QActionGroup>
 #include <QCheckBox>
 #include <QPainter>
 #include <QPlainTextEdit>
@@ -960,6 +959,7 @@ bool MainWindow::verifyUserCredentials(const QString &username,
 bool MainWindow::promptCreateUser(const QString &forcedRoleKey, bool allowCancel) {
     QDialog dialog(this);
     dialog.setWindowTitle("Create User Account");
+    dialog.setStyleSheet(m_darkStyleSheet);
     QFormLayout *formLayout = new QFormLayout(&dialog);
 
     QLineEdit *nameField = new QLineEdit(&dialog);
@@ -1112,6 +1112,7 @@ bool MainWindow::ensureInitialAdmin() {
 bool MainWindow::promptLogin() {
     QDialog dialog(this);
     dialog.setWindowTitle("User Login");
+    dialog.setStyleSheet(m_darkStyleSheet);
     QFormLayout *formLayout = new QFormLayout(&dialog);
 
     QLineEdit *usernameField = new QLineEdit(&dialog);
@@ -2692,7 +2693,7 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
     if (event->type() == QEvent::Resize && m_latestSkuScrollArea) {
         if (watched == m_latestSkuScrollArea || watched == m_latestSkuScrollArea->viewport()) {
             if (!m_refreshingLatestSkuCards) {
-                refreshLatestSkuCards();
+                scheduleLatestSkuCardsRefresh(100);
             }
             return false;
         }
@@ -2760,6 +2761,13 @@ void MainWindow::setupUi() {
         "QTabBar::tab { background: #111720; color: #cfd7e3; padding: 8px 14px; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 6px; border: 1px solid #1f2a3a; }"
         "QTabBar::tab:selected { background: #ff8f1f; color: #0b0f14; }"
         "QTabBar::tab:hover { background: #1b2634; color: #ffffff; }"
+        "QMenuBar { background-color: #111720; color: #f7f9fc; border-bottom: 1px solid #1f2a3a; }"
+        "QMenuBar::item { background: transparent; padding: 4px 10px; }"
+        "QMenuBar::item:selected { background: #243449; color: #ffffff; }"
+        "QMenu { background-color: #111720; color: #f7f9fc; border: 1px solid #1f2a3a; }"
+        "QMenu::item { padding: 6px 20px 6px 20px; }"
+        "QMenu::item:selected { background: #324a6d; color: #ffffff; }"
+        "QMenu::separator { height: 1px; background: #243246; margin: 4px 8px; }"
         "QScrollArea { background-color: transparent; border: none; }"
         "QScrollArea#latestSkuScrollArea { background-color: #0c1118; border: 1px solid #1f2a3a; border-radius: 12px; }"
         "QWidget#latestSkuContainer { background-color: #0c1118; }"
@@ -2786,10 +2794,10 @@ void MainWindow::setupUi() {
         "QFrame#skuCard { background-color: #121a24; border: 1px solid #243246; border-radius: 12px; }"
         "QFrame#skuCard:hover { border-color: #ff8f1f; }"
         "QLabel#skuCardImage { background-color: #0e141d; border: 1px solid #2a3647; border-radius: 8px; }"
-        "QLabel#skuCardSku { color: #ffb765; font-weight: 700; font-size: 12px; }"
-        "QLabel#skuCardName { color: #f7f9fc; font-weight: 700; font-size: 18px; }"
-        "QLabel#skuCardMeta { color: #cfd7e3; font-weight: 600; font-size: 12px; }"
-        "QLabel#skuCardDate { color: #9fb0c6; font-size: 11px; }";
+        "QLabel#skuCardSku { color: #ffb765; font-weight: 700; }"
+        "QLabel#skuCardName { color: #f7f9fc; font-weight: 700; }"
+        "QLabel#skuCardMeta { color: #cfd7e3; font-weight: 600; }"
+        "QLabel#skuCardDate { color: #9fb0c6; }";
     m_darkStyleSheet = darkTheme;
 
     m_lightStyleSheet =
@@ -2833,10 +2841,10 @@ void MainWindow::setupUi() {
         "QFrame#skuCard { background-color: #ffffff; border: 1px solid #d7dce3; border-radius: 12px; }"
         "QFrame#skuCard:hover { border-color: #2b5fab; }"
         "QLabel#skuCardImage { background-color: #f4f6fb; border: 1px solid #d7dce3; border-radius: 8px; }"
-        "QLabel#skuCardSku { color: #2b5fab; font-weight: 700; font-size: 12px; }"
-        "QLabel#skuCardName { color: #1b1f24; font-weight: 700; font-size: 18px; }"
-        "QLabel#skuCardMeta { color: #4a5568; font-weight: 600; font-size: 12px; }"
-        "QLabel#skuCardDate { color: #6b7280; font-size: 11px; }";
+        "QLabel#skuCardSku { color: #2b5fab; font-weight: 700; }"
+        "QLabel#skuCardName { color: #1b1f24; font-weight: 700; }"
+        "QLabel#skuCardMeta { color: #4a5568; font-weight: 600; }"
+        "QLabel#skuCardDate { color: #6b7280; }";
 
     m_mainTabs = ui->mainTabWidget;
 
@@ -2928,6 +2936,11 @@ void MainWindow::setupUi() {
         m_latestSkuScrollArea->installEventFilter(this);
         if (m_latestSkuScrollArea->viewport()) {
             m_latestSkuScrollArea->viewport()->installEventFilter(this);
+        }
+        if (!m_latestSkuRefreshTimer) {
+            m_latestSkuRefreshTimer = new QTimer(this);
+            m_latestSkuRefreshTimer->setSingleShot(true);
+            connect(m_latestSkuRefreshTimer, &QTimer::timeout, this, &MainWindow::refreshLatestSkuCards);
         }
     }
 
@@ -3371,19 +3384,6 @@ void MainWindow::createMenusAndToolbars() {
     m_actionFullScreen = viewMenu->addAction("Full Screen");
     m_actionFullScreen->setCheckable(true);
 
-    QMenu *themeMenu = viewMenu->addMenu("Theme");
-    QActionGroup *themeGroup = new QActionGroup(this);
-    themeGroup->setExclusive(true);
-    m_actionThemeDark = themeMenu->addAction("Dark");
-    m_actionThemeDark->setCheckable(true);
-    themeGroup->addAction(m_actionThemeDark);
-    m_actionThemeLight = themeMenu->addAction("Light");
-    m_actionThemeLight->setCheckable(true);
-    themeGroup->addAction(m_actionThemeLight);
-    m_actionThemeSystem = themeMenu->addAction("System Default");
-    m_actionThemeSystem->setCheckable(true);
-    themeGroup->addAction(m_actionThemeSystem);
-
     QMenu *optionsMenu = menuBar()->addMenu("&Options");
     m_actionPrintSettings = optionsMenu->addAction("QR Code / Sticker Settings...");
 
@@ -3408,9 +3408,6 @@ void MainWindow::createMenusAndToolbars() {
     }
     connect(m_actionExit, &QAction::triggered, this, &MainWindow::onExitTriggered);
     connect(m_actionFullScreen, &QAction::toggled, this, &MainWindow::onFullScreenToggled);
-    connect(m_actionThemeDark, &QAction::triggered, this, &MainWindow::onThemeDark);
-    connect(m_actionThemeLight, &QAction::triggered, this, &MainWindow::onThemeLight);
-    connect(m_actionThemeSystem, &QAction::triggered, this, &MainWindow::onThemeSystem);
     connect(m_actionPrintSettings, &QAction::triggered, this, &MainWindow::onPrintSettingsTriggered);
     connect(m_actionManageUsers, &QAction::triggered, this, &MainWindow::onManageUsersTriggered);
     connect(m_actionSwitchUser, &QAction::triggered, this, &MainWindow::onSwitchUserTriggered);
@@ -3525,33 +3522,27 @@ void MainWindow::registerUiInteractionLogging() {
 }
 
 void MainWindow::applyTheme(Theme theme) {
-    m_currentTheme = theme;
-    if (theme == Theme::Dark) {
-        qApp->setStyleSheet(m_darkStyleSheet);
-    } else if (theme == Theme::Light) {
-        qApp->setStyleSheet(m_lightStyleSheet);
-    } else {
-        qApp->setStyleSheet(QString());
-    }
+    Q_UNUSED(theme);
+    m_currentTheme = Theme::Dark;
+    qApp->setStyleSheet(m_darkStyleSheet);
 
     if (m_resultsView) {
-        if (theme == Theme::Dark) {
-            m_resultsView->setStyleSheet(
-                "QTableView::item:selected { background: #324a6d; color: #ffffff; }"
-                "QTableView { selection-background-color: #324a6d; selection-color: #ffffff; }");
-        } else {
-            m_resultsView->setStyleSheet(QString());
-        }
+        m_resultsView->setStyleSheet(
+            "QTableView::item:selected { background: #324a6d; color: #ffffff; }"
+            "QTableView { selection-background-color: #324a6d; selection-color: #ffffff; }");
     }
 
     if (m_actionThemeDark) {
-        m_actionThemeDark->setChecked(theme == Theme::Dark);
+        m_actionThemeDark->setChecked(true);
+        m_actionThemeDark->setEnabled(false);
     }
     if (m_actionThemeLight) {
-        m_actionThemeLight->setChecked(theme == Theme::Light);
+        m_actionThemeLight->setChecked(false);
+        m_actionThemeLight->setEnabled(false);
     }
     if (m_actionThemeSystem) {
-        m_actionThemeSystem->setChecked(theme == Theme::System);
+        m_actionThemeSystem->setChecked(false);
+        m_actionThemeSystem->setEnabled(false);
     }
 }
 
@@ -4511,11 +4502,11 @@ void MainWindow::onThemeDark() {
 }
 
 void MainWindow::onThemeLight() {
-    applyTheme(Theme::Light);
+    applyTheme(Theme::Dark);
 }
 
 void MainWindow::onThemeSystem() {
-    applyTheme(Theme::System);
+    applyTheme(Theme::Dark);
 }
 
 void MainWindow::onHelpGuidesTriggered() {
@@ -5749,7 +5740,18 @@ void MainWindow::updateDashboardMetrics() {
         m_smSerialsValueLabel->setText(QString::number(smSerials));
     }
 
-    refreshLatestSkuCards();
+    scheduleLatestSkuCardsRefresh();
+}
+
+void MainWindow::scheduleLatestSkuCardsRefresh(int delayMs) {
+    if (!m_latestSkuRefreshTimer) {
+        m_latestSkuRefreshTimer = new QTimer(this);
+        m_latestSkuRefreshTimer->setSingleShot(true);
+        connect(m_latestSkuRefreshTimer, &QTimer::timeout, this, &MainWindow::refreshLatestSkuCards);
+    }
+
+    const int safeDelay = qMax(0, delayMs);
+    m_latestSkuRefreshTimer->start(safeDelay);
 }
 
 void MainWindow::updateBarcodeSkuDetails() {
@@ -5820,29 +5822,45 @@ void MainWindow::refreshLatestSkuCards() {
         return;
     }
     m_refreshingLatestSkuCards = true;
+    m_latestSkuContainer->setUpdatesEnabled(false);
 
-    while (QLayoutItem *item = m_latestSkuGridLayout->takeAt(0)) {
-        if (item->widget()) {
-            item->widget()->deleteLater();
-        }
-        delete item;
-    }
-
-    const int cardWidthPx = 320;
-    const int cardHeightPx = 170;
-    const QMargins gridMargins = m_latestSkuGridLayout->contentsMargins();
-    const int hSpacing = qMax(0, m_latestSkuGridLayout->horizontalSpacing());
-    const int vSpacing = qMax(0, m_latestSkuGridLayout->verticalSpacing());
     int availableWidth = m_latestSkuContainer->width();
     int availableHeight = m_latestSkuContainer->height();
     if (m_latestSkuScrollArea && m_latestSkuScrollArea->viewport()) {
         availableWidth = m_latestSkuScrollArea->viewport()->width();
         availableHeight = m_latestSkuScrollArea->viewport()->height();
     }
-    availableWidth = qMax(1, availableWidth - gridMargins.left() - gridMargins.right());
-    availableHeight = qMax(1, availableHeight - gridMargins.top() - gridMargins.bottom());
-    const int columns = qMax(1, (availableWidth + hSpacing) / (cardWidthPx + hSpacing));
-    const int rows = qMax(1, (availableHeight + vSpacing) / (cardHeightPx + vSpacing));
+    availableWidth = qMax(320, availableWidth);
+    availableHeight = qMax(220, availableHeight);
+
+    const int outerMargin = qBound(8, availableWidth / 65, 20);
+    const int spacing = qBound(8, availableWidth / 75, 22);
+    m_latestSkuGridLayout->setContentsMargins(outerMargin, outerMargin, outerMargin, outerMargin);
+    m_latestSkuGridLayout->setHorizontalSpacing(spacing);
+    m_latestSkuGridLayout->setVerticalSpacing(spacing);
+    m_latestSkuGridLayout->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+
+    while (QLayoutItem *item = m_latestSkuGridLayout->takeAt(0)) {
+        if (QWidget *w = item->widget()) {
+            delete w;
+        }
+        delete item;
+    }
+
+    const int usableWidth = qMax(1, availableWidth - outerMargin * 2);
+    const int usableHeight = qMax(1, availableHeight - outerMargin * 2);
+    const int minCardWidthPx = 250;
+    const int maxCardWidthPx = 420;
+    int columns = qMax(1, (usableWidth + spacing) / (minCardWidthPx + spacing));
+    int cardWidthPx = qMax(minCardWidthPx, (usableWidth - (columns - 1) * spacing) / columns);
+    if (cardWidthPx > maxCardWidthPx) {
+        const int preferredColumns = qMax(1, (usableWidth + spacing) / (maxCardWidthPx + spacing));
+        columns = qMax(columns, preferredColumns);
+        cardWidthPx = qMax(minCardWidthPx, (usableWidth - (columns - 1) * spacing) / columns);
+    }
+    cardWidthPx = qBound(minCardWidthPx, cardWidthPx, maxCardWidthPx);
+    const int cardHeightPx = qBound(150, static_cast<int>(cardWidthPx * 0.58), 230);
+    const int rows = qMax(1, (usableHeight + spacing) / (cardHeightPx + spacing));
     const int cardLimit = qMax(6, columns * rows);
 
     const int year = selectedBarcodeYear();
@@ -5861,7 +5879,14 @@ void MainWindow::refreshLatestSkuCards() {
     q.addBindValue(year);
     q.addBindValue(quarter);
     q.addBindValue(cardLimit);
-    q.exec();
+    if (!q.exec()) {
+        appendRunLog(QString("refreshLatestSkuCards: query failed: %1").arg(q.lastError().text()));
+    }
+
+    const qreal skuSizePt = qBound(8.0, cardWidthPx / 34.0, 13.0);
+    const qreal nameSizePt = qBound(9.0, cardWidthPx / 23.0, 18.0);
+    const qreal metaSizePt = qBound(8.0, cardWidthPx / 37.0, 12.0);
+    const qreal dateSizePt = qBound(7.0, cardWidthPx / 40.0, 11.0);
 
     int index = 0;
     while (q.next()) {
@@ -5876,44 +5901,66 @@ void MainWindow::refreshLatestSkuCards() {
         auto *card = new QFrame(m_latestSkuContainer);
         card->setObjectName("skuCard");
         card->setFixedSize(cardWidthPx, cardHeightPx);
+        card->setAttribute(Qt::WA_StyledBackground, true);
 
         auto *shadow = new QGraphicsDropShadowEffect(card);
-        shadow->setBlurRadius(18);
+        shadow->setBlurRadius(qBound(10, cardWidthPx / 18, 18));
         shadow->setOffset(0, 6);
         shadow->setColor(QColor(0, 0, 0, 140));
         card->setGraphicsEffect(shadow);
 
+        const int contentMargin = qBound(8, cardWidthPx / 30, 16);
+        const int contentSpacing = qBound(6, cardWidthPx / 40, 14);
         auto *cardLayout = new QHBoxLayout(card);
-        cardLayout->setContentsMargins(12, 12, 12, 12);
-        cardLayout->setSpacing(10);
+        cardLayout->setContentsMargins(contentMargin, contentMargin, contentMargin, contentMargin);
+        cardLayout->setSpacing(contentSpacing);
 
+        const int imageSizePx = qBound(64, static_cast<int>(cardHeightPx * 0.52), 120);
         auto *imageLabel = new QLabel(card);
         imageLabel->setObjectName("skuCardImage");
-        imageLabel->setFixedSize(88, 88);
+        imageLabel->setFixedSize(imageSizePx, imageSizePx);
         imageLabel->setAlignment(Qt::AlignCenter);
         loadImageLabelFromData(imageLabel, imageData, imagePath, AppGlobals::noImageText());
 
         auto *skuLabel = new QLabel(QString("SKU: %1").arg(sku), card);
         skuLabel->setObjectName("skuCardSku");
+        QFont skuFont = skuLabel->font();
+        skuFont.setPointSizeF(skuSizePt);
+        skuFont.setBold(true);
+        skuLabel->setFont(skuFont);
 
         auto *nameLabel = new QLabel(partName, card);
         nameLabel->setWordWrap(true);
         nameLabel->setObjectName("skuCardName");
+        QFont nameFont = nameLabel->font();
+        nameFont.setPointSizeF(nameSizePt);
+        nameFont.setBold(true);
+        nameLabel->setFont(nameFont);
+        nameLabel->setMaximumHeight(qBound(42, static_cast<int>(cardHeightPx * 0.35), 92));
 
         auto *incomingLabel = new QLabel(
             QString("Incoming (Q%1 %2): %3").arg(quarter).arg(year).arg(quarterIncoming), card);
         incomingLabel->setObjectName("skuCardMeta");
+        QFont incomingFont = incomingLabel->font();
+        incomingFont.setPointSizeF(metaSizePt);
+        incomingLabel->setFont(incomingFont);
 
         auto *totalLabel = new QLabel(QString("Total Serials: %1").arg(totalSerials), card);
         totalLabel->setObjectName("skuCardMeta");
+        QFont totalFont = totalLabel->font();
+        totalFont.setPointSizeF(metaSizePt);
+        totalLabel->setFont(totalFont);
 
         auto *dateLabel = new QLabel(createdAt.isEmpty() ? AppGlobals::noDateText()
                                                          : QString("Date: %1").arg(createdAt), card);
         dateLabel->setObjectName("skuCardDate");
+        QFont dateFont = dateLabel->font();
+        dateFont.setPointSizeF(dateSizePt);
+        dateLabel->setFont(dateFont);
 
         auto *textLayout = new QVBoxLayout();
         textLayout->setContentsMargins(0, 0, 0, 0);
-        textLayout->setSpacing(4);
+        textLayout->setSpacing(qBound(2, cardHeightPx / 60, 8));
         textLayout->addWidget(skuLabel);
         textLayout->addWidget(nameLabel);
         textLayout->addWidget(incomingLabel);
@@ -5950,6 +5997,9 @@ void MainWindow::refreshLatestSkuCards() {
         emptyLabel->setStyleSheet("QLabel { color: #a7b3c6; }");
         m_latestSkuGridLayout->addWidget(emptyLabel, 0, 0);
     }
+
+    m_latestSkuContainer->setUpdatesEnabled(true);
+    m_latestSkuContainer->update();
     m_refreshingLatestSkuCards = false;
 }
 
