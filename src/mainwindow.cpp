@@ -5437,8 +5437,8 @@ void MainWindow::updateNextBarcodeSerial() {
         updateBarcodeSkuDetails();
         return;
     }
-    const int lastSerial = fetchLastBarcodeSerial(sku, year, quarter);
-    m_barcodeNextSerialField->setText(QString::number(lastSerial + 1));
+    const int nextSerial = fetchNextBarcodeSerial(sku, year, quarter);
+    m_barcodeNextSerialField->setText(QString::number(nextSerial));
     updateBarcodeSkuDetails();
 }
 
@@ -5525,16 +5525,56 @@ QImage MainWindow::stickerLogoForPrefix(const QString &prefix) const {
     return QImage();
 }
 
-int MainWindow::fetchLastBarcodeSerial(const QString &sku, int year, int quarter) const {
+int MainWindow::fetchNextBarcodeSerial(const QString &sku, int year, int quarter) const {
+    const QList<int> serials = fetchNextBarcodeSerials(sku, year, quarter, 1);
+    return serials.isEmpty() ? 1 : serials.first();
+}
+
+QList<int> MainWindow::fetchNextBarcodeSerials(const QString &sku, int year, int quarter, int quantity) const {
+    QList<int> nextSerials;
+    if (quantity <= 0 || sku.trimmed().isEmpty()) {
+        return nextSerials;
+    }
+
     QSqlQuery q(m_db);
-    q.prepare("SELECT MAX(serial) FROM barcode_log_active WHERE sku = ? AND year = ? AND quarter = ?");
+    q.prepare("SELECT serial FROM barcode_log_active "
+              "WHERE sku = ? AND year = ? AND quarter = ? AND serial > 0 "
+              "ORDER BY serial ASC");
     q.addBindValue(sku);
     q.addBindValue(year);
     q.addBindValue(quarter);
-    if (q.exec() && q.next() && !q.isNull(0)) {
-        return q.value(0).toInt();
+    QList<int> existingSerials;
+    if (q.exec()) {
+        while (q.next()) {
+            if (!q.isNull(0)) {
+                existingSerials.append(q.value(0).toInt());
+            }
+        }
     }
-    return 0;
+
+    int candidate = 1;
+    int index = 0;
+    while (nextSerials.size() < quantity) {
+        while (index < existingSerials.size() && existingSerials.at(index) < candidate) {
+            ++index;
+        }
+
+        bool alreadyUsed = false;
+        while (index < existingSerials.size() && existingSerials.at(index) == candidate) {
+            alreadyUsed = true;
+            ++index;
+        }
+
+        if (alreadyUsed) {
+            ++candidate;
+            continue;
+        }
+
+        nextSerials.append(candidate);
+        ++candidate;
+    }
+
+    return nextSerials;
 }
 
 int MainWindow::currentQuarter() const {
@@ -6586,7 +6626,11 @@ void MainWindow::generateBarcodes() {
     const int year = selectedBarcodeYear();
     const int quarter = selectedBarcodeQuarter();
     const QString barcodePrefix = selectedBarcodePrefix();
-    const int lastSerial = fetchLastBarcodeSerial(sku, year, quarter);
+    const QList<int> serials = fetchNextBarcodeSerials(sku, year, quarter, quantity);
+    if (serials.size() != quantity) {
+        setStatus("Unable to allocate serial numbers.", false);
+        return;
+    }
 
     QList<QStringList> rows;
     rows.reserve(quantity);
@@ -6596,8 +6640,7 @@ void MainWindow::generateBarcodes() {
     QSqlQuery log(m_db);
     log.prepare("INSERT INTO barcode_log (sku, year, quarter, serial, barcode, created_at) VALUES (?,?,?,?,?,?)");
 
-    for (int i = 1; i <= quantity; ++i) {
-        const int serial = lastSerial + i;
+    for (int serial : serials) {
         const QString barcodeValue = buildBarcodeValue(sku, serial, year, quarter, barcodePrefix);
         const QString createdAt = QDateTime::currentDateTime().toString(Qt::ISODate);
 
@@ -6630,13 +6673,7 @@ void MainWindow::generateBarcodes() {
 
     m_db.commit();
 
-    QSqlQuery up(m_db);
-    up.prepare("INSERT OR REPLACE INTO barcode_serials (sku, year, quarter, last_serial) VALUES (?,?,?,?)");
-    up.addBindValue(sku);
-    up.addBindValue(year);
-    up.addBindValue(quarter);
-    up.addBindValue(lastSerial + quantity);
-    up.exec();
+    refreshBarcodeSerialTracker(sku, year, quarter);
 
     populateBarcodeModel(rows);
 
@@ -6651,7 +6688,7 @@ void MainWindow::generateBarcodes() {
         m_barcodeValueField->setText(lastBarcode);
     }
 
-    m_barcodeNextSerialField->setText(QString::number(lastSerial + quantity + 1));
+    updateNextBarcodeSerial();
     setStatus(QString("Generated %1 QR code(s) for %2.").arg(quantity).arg(sku), true);
     updateDashboardMetrics();
     updateQuantityWordsLabels(sku);
@@ -6662,8 +6699,15 @@ void MainWindow::generateBarcodes() {
     logDetails.insert("year", year);
     logDetails.insert("quarter", quarter);
     logDetails.insert("prefix", barcodePrefix);
-    logDetails.insert("serial_start", lastSerial + 1);
-    logDetails.insert("serial_end", lastSerial + quantity);
+    if (!serials.isEmpty()) {
+        logDetails.insert("serial_start", serials.first());
+        logDetails.insert("serial_end", serials.last());
+    }
+    QJsonArray serialArray;
+    for (int serial : serials) {
+        serialArray.append(serial);
+    }
+    logDetails.insert("serials", serialArray);
     logAction("BARCODE_GENERATE",
               sku,
               QString(),

@@ -5,6 +5,7 @@
 #include <QSqlDatabase>
 #include <QImage>
 #include <QByteArray>
+#include <QList>
 #include "printsettingsdialog.h"
 
 namespace Ui {
@@ -230,7 +231,8 @@ protected:
     QString barcodePrefixFromValue(const QString &barcodeValue) const;
     void updateNextBarcodeSerial();
     QString buildBarcodeValue(const QString &sku, int serial, int year, int quarter, const QString &prefix) const;
-    int fetchLastBarcodeSerial(const QString &sku, int year, int quarter) const;
+    int fetchNextBarcodeSerial(const QString &sku, int year, int quarter) const;
+    QList<int> fetchNextBarcodeSerials(const QString &sku, int year, int quarter, int quantity) const;
     int currentQuarter() const;
     int currentYear() const;
     int selectedBarcodeQuarter() const;
