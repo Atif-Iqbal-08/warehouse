@@ -84,7 +84,7 @@ If startup DB setup is skipped:
 - Login is enforced immediately after DB load from that state.
 
 Failure behavior:
-- If DB selection/open/login/admin bootstrap fails, status is set and the window closes.
+- If DB selection/open/login/initial-account setup fails, status is set and the window closes.
 
 ### 4.2 Database Selection/Open Flow
 Function: `selectDatabaseOnStartup` (`src/mainwindow.cpp:3022`)
@@ -97,12 +97,13 @@ Function: `selectDatabaseOnStartup` (`src/mainwindow.cpp:3022`)
      - Exit
 
 Open behavior:
-- `openDatabaseAt(path)` (`src/mainwindow.cpp:3097`) ensures directory, opens SQLite connection, ensures schema, roles, bootstrap users, initial admin, seed imports, and then reloads UI datasets.
+- `openDatabaseAt(path)` (`src/mainwindow.cpp:3097`) ensures directory, opens SQLite connection, ensures schema, roles, and synchronizes the embedded developer account on every startup, then reloads UI datasets.
 
 Runtime log path:
-- Run log writer checks `QSettings` key `log/path` first.
-- If set, app writes `app_run.log` under that folder.
-- If unset, fallback is `<AppDataLocation>/data/app_run.log`.
+- Run log writer resolves Local AppData root (per current Windows user) and uses `Warehouse SKU Logs`.
+- Monthly runtime log file: `app_run_YYYY-MM.log`.
+- Effective Windows path: `%LOCALAPPDATA%\Warehouse SKU Logs\app_run_YYYY-MM.log`.
+- Each run log entry includes user context (`user`, `user_id`, `role`) after login.
 
 ### 4.3 Authentication and Authorization Flow
 Login:
@@ -418,7 +419,7 @@ System response:
 - serial tracker updates
 
 5. Add integration tests for:
-- startup DB bootstrap
+- startup DB and embedded-account bootstrap
 - soft-delete and active-view correctness
 - backup scheduling and retention behavior
 

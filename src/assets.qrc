@@ -2,6 +2,11 @@
     <qresource prefix="/assets">
         <file alias="sku_rules.csv">../Assets/sku_rules.csv</file>
         <file alias="logo.png">../Assets/logo.png</file>
-        <file alias="sticker_logo.png">../Assets/sticker_logo.png</file>
+        <file alias="sticker_logo.png">../Assets/SK Logo.png</file>
+        <file alias="sk_sticker_logo.png">../Assets/SK Logo.png</file>
+        <file alias="sd_sticker_logo.png">../Assets/SD logo .png</file>
+        <file alias="sm_sticker_logo.png">../Assets/SDMPL Logo.png</file>
+        <file alias="sku_ref_1.png">../Assets/SKU Ref 1.png</file>
+        <file alias="sku_ref_2.png">../Assets/SKU Ref 2.png</file>
     </qresource>
 </RCC>

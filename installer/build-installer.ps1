@@ -1,10 +1,14 @@
 param(
-    [string]$BuildDir = "build-qmake\\release",
+    [string]$BuildDir = "build-qmake",
     [string]$OutputDir = "dist",
     [string]$AppName = "Warehouse SKU Generator",
     [string]$AppVersion = "1.0.0",
     [string]$Publisher = "Skylark Drones Pvt. Ltd",
-    [string]$QtBinDir = ""
+    [string]$QtBinDir = "",
+    [ValidateSet("Release", "Debug")]
+    [string]$BuildConfig = "Release",
+    [switch]$CleanBuild,
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,6 +24,33 @@ function Resolve-RepoPath {
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
 
+if (-not $SkipBuild) {
+    $buildScriptPath = Join-Path $RepoRoot "build.ps1"
+    if (-not (Test-Path $buildScriptPath)) {
+        throw "Build script not found: $buildScriptPath"
+    }
+
+    $buildArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $buildScriptPath,
+        "-BuildDir", $BuildDir,
+        "-Config", $BuildConfig
+    )
+
+    if ($CleanBuild) {
+        $buildArgs += "-Clean"
+    }
+    if ($QtBinDir) {
+        $buildArgs += @("-QtBinDir", $QtBinDir)
+    }
+
+    & powershell @buildArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "Application build failed. Installer build stopped."
+    }
+}
+
 $resolvedBuildDir = Resolve-RepoPath $BuildDir
 if (-not (Test-Path $resolvedBuildDir)) {
     throw "Build output not found: $resolvedBuildDir"
@@ -33,14 +64,29 @@ if (-not (Test-Path $resolvedOutputDir)) {
 $resolvedOutputDir = (Resolve-Path $resolvedOutputDir).Path
 
 $exeName = "warehouse_sku_generator.exe"
-$exePath = Join-Path $resolvedBuildDir $exeName
-if (-not (Test-Path $exePath)) {
-    throw "Executable not found: $exePath"
+$exeCandidates = @(
+    (Join-Path $resolvedBuildDir $exeName),
+    (Join-Path (Join-Path $resolvedBuildDir "release") $exeName),
+    (Join-Path (Join-Path $resolvedBuildDir "Release") $exeName),
+    (Join-Path (Join-Path $resolvedBuildDir "RelWithDebInfo") $exeName),
+    (Join-Path (Join-Path $resolvedBuildDir "debug") $exeName),
+    (Join-Path (Join-Path $resolvedBuildDir "Debug") $exeName)
+)
+$exePath = $exeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $exePath) {
+    throw "Executable not found. Checked: $($exeCandidates -join ', ')"
 }
+$exeDir = Split-Path -Parent $exePath
 
 $stagingDir = Join-Path $resolvedOutputDir "staging"
 if (Test-Path $stagingDir) {
-    Remove-Item -Recurse -Force $stagingDir
+    try {
+        Remove-Item -Recurse -Force $stagingDir -ErrorAction Stop
+    } catch {
+        $fallbackStamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        $stagingDir = Join-Path $resolvedOutputDir "staging_$fallbackStamp"
+        Write-Warning "Unable to clean existing staging directory. Using fallback: $stagingDir"
+    }
 }
 New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
 
@@ -49,6 +95,34 @@ Copy-Item $exePath $stagingDir -Force
 $assetsDir = Join-Path $RepoRoot "Assets"
 if (Test-Path $assetsDir) {
     Copy-Item $assetsDir (Join-Path $stagingDir "Assets") -Recurse -Force
+}
+
+$skuReferenceImages = @(
+    (Join-Path $stagingDir "Assets\\SKU Ref 1.png"),
+    (Join-Path $stagingDir "Assets\\SKU Ref 2.png")
+)
+foreach ($assetPath in $skuReferenceImages) {
+    if (-not (Test-Path $assetPath)) {
+        throw "Missing required installer asset: $assetPath"
+    }
+}
+
+$docsDir = Join-Path $RepoRoot "docs"
+$docsToStage = @(
+    "Warehouse_SKU_QR_Manager_User_Guide.md",
+    "Warehouse_SKU_QR_Manager_Technical_Documentation.md",
+    "Warehouse_SKU_QR_Manager_User_Guide.docx",
+    "Warehouse_SKU_QR_Manager_Technical_Documentation.docx"
+)
+if (Test-Path $docsDir) {
+    $stagingDocsDir = Join-Path $stagingDir "docs"
+    New-Item -ItemType Directory -Path $stagingDocsDir -Force | Out-Null
+    foreach ($docName in $docsToStage) {
+        $sourceDocPath = Join-Path $docsDir $docName
+        if (Test-Path $sourceDocPath) {
+            Copy-Item $sourceDocPath (Join-Path $stagingDocsDir $docName) -Force
+        }
+    }
 }
 
 $windeployqt = $null
@@ -68,14 +142,15 @@ if ($QtBinDir) {
 
 if ($windeployqt) {
     $stagingExe = Join-Path $stagingDir $exeName
-    & $windeployqt --release --no-translations --compiler-runtime $stagingExe | Out-Host
+    $deployMode = if ($BuildConfig -eq "Debug") { "--debug" } else { "--release" }
+    & $windeployqt $deployMode --no-translations --compiler-runtime $stagingExe | Out-Host
 } else {
-    $qtRuntimeFound = (Test-Path (Join-Path $resolvedBuildDir "Qt6Core.dll")) -or (Test-Path (Join-Path $resolvedBuildDir "Qt5Core.dll"))
+    $qtRuntimeFound = (Test-Path (Join-Path $exeDir "Qt6Core.dll")) -or (Test-Path (Join-Path $exeDir "Qt5Core.dll"))
     if (-not $qtRuntimeFound) {
         throw "windeployqt.exe not found and Qt runtime not detected in build output."
     }
 
-    Copy-Item (Join-Path $resolvedBuildDir "*") $stagingDir -Recurse -Force
+    Copy-Item (Join-Path $exeDir "*") $stagingDir -Recurse -Force
     $stagingData = Join-Path $stagingDir "data"
     if (Test-Path $stagingData) {
         Remove-Item -Recurse -Force $stagingData

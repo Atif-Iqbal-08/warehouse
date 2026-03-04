@@ -1,7 +1,7 @@
 # Warehouse SKU and QR Code Manager
 Professional User and Admin Documentation
 
-Document date: 2026-02-16  
+Document date: 2026-02-17  
 Application: Warehouse SKU and QR Code Manager  
 Organization: Skylark Drones Pvt. Ltd
 
@@ -29,47 +29,176 @@ Main capabilities:
 - Audit logging for sensitive actions
 - Automated encrypted backup scheduling and retention pruning
 
+## 2.1 Installation and Upgrade (Windows, In-Depth)
+### 2.1.1 Prerequisites
+- Supported OS: Windows 10/11 (64-bit)
+- Installer privilege model: **Administrator required** (`PrivilegesRequired=admin`)
+- Minimum operator requirement: user account able to approve UAC and choose writable data folders
+- Required deliverables:
+  - Installer EXE (`warehouse_installer.exe`)
+  - Included runtime assets under `Assets\`
+
+### 2.1.2 Standard Installation Flow
+1. Run `warehouse_installer.exe`.
+2. Approve the Windows UAC prompt (administrator elevation).
+3. Choose installation directory (default: Program Files path shown by installer).
+4. Complete installer configuration pages in sequence:
+   - Database Location
+   - Backup Location (required)
+   - Runtime Log Permission (required)
+5. Keep `Create desktop icon` enabled if you want a desktop shortcut.
+6. Complete installation and launch the application.
+7. Installer places documentation files in the app install folder under `docs\`.
+
+### 2.1.3 Installer Configuration Pages (What Each One Does)
+Database Location:
+- Stores database file path in registry setting `db/path`.
+- Effective database file becomes `<selected-folder>\sku.db`.
+- Folder is created automatically if it does not exist.
+
+Runtime Logs (Automatic):
+- Runtime log location is fixed to Local AppData per Windows user:
+  - `%LOCALAPPDATA%\Warehouse SKU Logs\app_run_YYYY-MM.log`
+- Installer asks for permission to use this location and requires consent to continue.
+- This automatically picks the current Windows username on each machine.
+
+Documentation Files (Automatic):
+- Installer places both user and technical guides in `<InstallDir>\docs\`.
+- In-app Help opens these installed files directly.
+
+Backup Location:
+- Stores backup root in `backup/path`.
+- This field is mandatory; installation cannot continue if empty.
+- Folder is created automatically if missing.
+
+### 2.1.4 UAC and Permission Behavior
+- Installer always requests admin elevation before installation.
+- App itself normally runs as standard user.
+- If database open/create fails due Windows folder permissions, the app can prompt:
+  - `Run as Administrator`
+  - `Choose Another Folder`
+- This allows one-time elevated relaunch for database path setup.
+
+### 2.1.5 First Launch After Install
+- App checks saved DB path and attempts to open database.
+- If no DB exists, startup prompt offers:
+  - `Create New DB`
+  - `Skip This Time`
+  - `Exit`
+- On startup, app ensures an embedded developer account exists and syncs its credentials, then shows login.
+- Initial embedded developer credentials:
+  - Username: `Admin`
+  - Password: `Skylark@321`
+
+### 2.1.6 Upgrade Process (Keep Existing Data)
+1. Close running app on all machines/sessions.
+2. Run latest installer (admin/UAC required).
+3. Select install directory (typically same path as existing install).
+4. Reconfirm DB/backup paths to existing production paths.
+5. Complete installer and launch app.
+6. Verify login and key workflows (SKU search, QR generate, export, backup).
+
+Notes:
+- Database and backup storage are external to install folder and are preserved if paths are reused.
+- Runtime logs continue in `%LOCALAPPDATA%\Warehouse SKU Logs` across upgrades.
+- User accounts are managed inside the application after login (Security -> User Access Control...).
+
+### 2.1.7 First-Time Operating Flow
+1. Launch application and log in using embedded account:
+   - Username: `Admin`
+   - Password: `Skylark@321`
+2. Open `Security -> User Access Control...`.
+3. Create role/user accounts for actual operators and supervisors.
+4. Use `Security -> Switch User...` to validate real user accounts.
+5. Keep embedded account reserved for controlled admin/support access.
+
 ## 3. Access and Security
-### 3.1 First Run and Login
-On first run (or with a new database path), the application:
-- Prompts for a database folder
-- Creates or opens `sku.db`
-- Ensures schema and default roles
-- Prompts to create a Master Admin account if no user exists
-- Requires login before normal operations
+### 3.1 Authentication Lifecycle
+- All normal operations are user-authenticated.
+- Login dialog requires username and password.
+- Login success applies role policy and updates enabled UI controls.
+- Login failures are recorded in audit/run log.
+- On every startup, app ensures the embedded developer account is available for access.
 
-If no saved database is available at startup, the prompt provides:
-- `Create New DB`
-- `Skip This Time` (opens UI without loading a database)
-- `Exit`
-
-### 3.2 Password Policy
-User passwords must satisfy all rules:
+### 3.2 Credential Storage and Password Policy
+Password policy:
 - Minimum 10 characters
 - At least one uppercase letter
 - At least one lowercase letter
 - At least one number
 - At least one special character
 
-### 3.3 Default Role Behavior
-Base roles are:
-- View Only (Print): read/search/export/print, no add/edit/delete
-- Add Data (No Delete): add and edit allowed, delete and serial management restricted
-- Full Access: all permissions enabled
+Credential model:
+- Username is normalized to lowercase.
+- Password is stored as salted SHA-256 (`password_hash` + `password_salt`) in `app_users`.
+- Plaintext passwords are not kept in database.
 
-Additional seeded roles exist in defaults:
-- Master Admin
-- Supervisor
-- Operator
-- Viewer
+### 3.3 Role and Permission Model
+Base roles:
+- View Only (Print)
+- Add Data (No Delete)
+- Full Access
 
-Custom roles can be created from the Security settings dialog, and per-user overrides can be applied.
+Seeded role keys include:
+- `view`, `add`, `full`
+- `master_admin`, `supervisor`, `operator`, `viewer`
 
-### 3.4 Actions Requiring Admin Re-Authorization
-The application prompts for admin credentials and reason text (minimum 20 characters) before sensitive actions:
+Effective access calculation:
+1. Base role defaults
+2. Saved role-level permission toggles (`app_roles`)
+3. Optional user-level override (`app_users.perm_*`)
+
+### 3.4 Permission Matrix (Base Defaults)
+| Permission | View Only | Add Data | Full Access |
+|---|---|---|---|
+| Add | No | Yes | Yes |
+| Edit | No | Yes | Yes |
+| Delete SKU | No | No | Yes |
+| Serial Edit | No | No | Yes |
+| Serial Delete | No | No | Yes |
+| Print | Yes | Yes | Yes |
+| Export CSV | Yes | Yes | Yes |
+| Backup/Restore | No | No | Yes |
+| Manage Users | No | No | Yes |
+
+### 3.5 User Access Control Screen (Security -> User Access Control...)
+Roles area:
+- Create/update role name
+- Choose base access level
+- Toggle permissions:
+  - Add, Edit, Delete
+  - Serial Edit, Serial Delete
+  - Manage Users, Backup/Restore
+  - Export, Print
+
+Users area:
+- Create user with Name, User ID, Email, Username, Password, Role
+- Optional `Custom permission override`
+- Apply or clear override for selected user
+- Permission mode displays as:
+  - `Role Default`
+  - `Custom Override`
+
+### 3.6 Admin Re-Authorization for Sensitive Actions
+Sensitive actions require secondary authorization dialog:
 - Delete SKU
-- Delete serial numbers (QR rows)
-- Edit existing serial history rows
+- Delete serial rows
+- Edit serial history rows
+
+Re-authorization checks:
+- Admin username/password must be valid
+- Account used for authorization must have `Manage Users`
+- Reason/comment is mandatory and must be at least 20 characters
+
+### 3.7 Auditing and Traceability
+Security-relevant actions are written to `app_audit_log`, including:
+- Login success/failure
+- Access denied events
+- Role and permission changes
+- User creation and overrides
+- Sensitive delete/edit operations
+
+Runtime app log files also include active `user`, `user_id`, and `role` with each entry.
 
 ## 4. Interface Structure
 The UI has four main tabs, plus a Help menu in the menu bar.
@@ -126,6 +255,9 @@ Areas:
 - Popup dialog with:
   - User Guide viewer
   - Technical Guide viewer
+- Documentation source:
+  - Installed files from `<InstallDir>\docs\`
+  - If missing, Help shows a file-not-found message
 
 ## 5. Complete Button Reference
 ### 5.1 Dashboard
@@ -412,11 +544,15 @@ Images folder:
 - `<AppDataLocation>/data/images`
 
 Runtime log file:
-- `<configured_log_path>/app_run.log`
-- If not configured, defaults to `<AppDataLocation>/data/app_run.log`
+- `%LOCALAPPDATA%\Warehouse SKU Logs\app_run_YYYY-MM.log`
+- Log location is automatic and installer asks for permission during setup.
 
 Default backup root:
 - `<AppDataLocation>/backups` (unless overridden by settings)
+
+Installed documentation files:
+- `<InstallDir>\docs\Warehouse_SKU_QR_Manager_User_Guide.md`
+- `<InstallDir>\docs\Warehouse_SKU_QR_Manager_Technical_Documentation.md`
 
 ### 11.2 Seed/Input Files
 Rules seed CSV:
@@ -455,6 +591,10 @@ Issue: Sensitive action denied.
 Issue: Export unavailable.
 - Cause: Role does not include export or print capability.
 - Action: Review role/override settings in User Access Control.
+
+Issue: Help guides do not open in app.
+- Cause: Guide files are missing from `<InstallDir>\docs\`.
+- Action: Reinstall using latest installer and verify docs folder contents.
 
 ## 14. Recommended Operating Practices
 - Keep role assignments minimal by responsibility.
