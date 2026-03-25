@@ -387,6 +387,7 @@ protected:
     QStandardItemModel *m_barcodeModel = nullptr;
     QImage m_barcodeImage;
     QStringList m_lastGeneratedBarcodes;
+    QLabel *m_searchNotFoundLabel = nullptr;
     bool m_refreshingLatestSkuCards = false;
     QString m_customDbPath;
     QString m_lastDatabaseOpenError;
