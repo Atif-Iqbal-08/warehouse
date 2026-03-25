@@ -75,6 +75,7 @@ private slots:
     void clearHistoryFields();
     void exportSkuMasterCsv();
     void exportBarcodeSummaryCsv();
+    void exportAllSerialsXls();
     void onTabChanged(int index);
     void onBarcodePeriodChanged();
     void onLoadDbTriggered();
@@ -407,6 +408,7 @@ protected:
     QAction *m_actionSaveDb = nullptr;
     QAction *m_actionExportSkuCsv = nullptr;
     QAction *m_actionExportBarcodeSummaryCsv = nullptr;
+    QAction *m_actionExportSerialsXls = nullptr;
     QAction *m_actionUninstall = nullptr;
     QAction *m_actionExit = nullptr;
     QAction *m_actionFullScreen = nullptr;

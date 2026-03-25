@@ -3556,6 +3556,7 @@ void MainWindow::createMenusAndToolbars() {
     fileMenu->addSeparator();
     m_actionExportSkuCsv = fileMenu->addAction("Export SKU Master (CSV)...");
     m_actionExportBarcodeSummaryCsv = fileMenu->addAction("Export QR Summary (CSV)...");
+    m_actionExportSerialsXls = fileMenu->addAction("Export All Generated Serial Numbers (Excel)...");
     fileMenu->addSeparator();
     m_actionUninstall = fileMenu->addAction("Uninstall...");
     m_actionExit = fileMenu->addAction("Exit");
@@ -3599,6 +3600,9 @@ void MainWindow::createMenusAndToolbars() {
     }
     if (m_actionExportBarcodeSummaryCsv) {
         connect(m_actionExportBarcodeSummaryCsv, &QAction::triggered, this, &MainWindow::exportBarcodeSummaryCsv);
+    }
+    if (m_actionExportSerialsXls) {
+        connect(m_actionExportSerialsXls, &QAction::triggered, this, &MainWindow::exportAllSerialsXls);
     }
     connect(m_actionUninstall, &QAction::triggered, this, &MainWindow::onUninstallTriggered);
     connect(m_actionExit, &QAction::triggered, this, &MainWindow::onExitTriggered);
@@ -3698,6 +3702,7 @@ void MainWindow::registerUiInteractionLogging() {
     wireAction(m_actionSaveDb, "actionSaveDb");
     wireAction(m_actionExportSkuCsv, "actionExportSkuCsv");
     wireAction(m_actionExportBarcodeSummaryCsv, "actionExportBarcodeSummaryCsv");
+    wireAction(m_actionExportSerialsXls, "actionExportSerialsXls");
     wireAction(m_actionUninstall, "actionUninstall");
     wireAction(m_actionExit, "actionExit");
     wireAction(m_actionFullScreen, "actionFullScreen");
@@ -4691,6 +4696,372 @@ void MainWindow::exportBarcodeSummaryCsv() {
     setStatus(QString("QR summary exported to %1").arg(QDir::toNativeSeparators(targetPath)), true);
     logAction("CSV_EXPORT",
               "BARCODE_SUMMARY",
+              QString(),
+              targetPath,
+              QString(),
+              "Export",
+              "EXPORT",
+              true,
+              QString(),
+              targetPath);
+}
+
+// ---------------------------------------------------------------------------
+// Excel (SpreadsheetML) export — all generated serial numbers grouped by SKU.
+// SpreadsheetML is plain XML; Excel opens it natively with a .xls extension
+// so no third-party library is required.
+// ---------------------------------------------------------------------------
+void MainWindow::exportAllSerialsXls() {
+    if (!requireAccess(m_access.canExport, "You don't have permission to export data.")) {
+        return;
+    }
+    if (!m_db.isOpen()) {
+        setStatus("No database open.", false);
+        return;
+    }
+
+    const QString stamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+    QDir exportDir(dataDirPath());
+    if (!exportDir.exists()) {
+        exportDir.mkpath(".");
+    }
+    const QString defaultName = exportDir.filePath(QString("serial_numbers_%1.xls").arg(stamp));
+    const QString chosen = QFileDialog::getSaveFileName(
+        this,
+        "Export All Generated Serial Numbers",
+        defaultName,
+        "Excel Workbook (*.xls);;All Files (*.*)");
+    if (chosen.isEmpty()) {
+        return;
+    }
+
+    // Ensure timestamp in filename to avoid silent overwrites.
+    QString targetPath = chosen;
+    {
+        const QRegularExpression stampPattern("\\d{8}_\\d{6}");
+        if (!targetPath.contains(stampPattern)) {
+            QFileInfo info(chosen);
+            QString suffix = info.suffix();
+            if (suffix.isEmpty()) { suffix = "xls"; }
+            targetPath = info.dir().filePath(
+                QString("%1_%2.%3").arg(info.completeBaseName(), stamp, suffix));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Fetch all serials joined to their SKU master record, ordered by SKU then
+    // year / quarter / serial so the sheet reads chronologically within each SKU.
+    // -----------------------------------------------------------------------
+    struct SerialRow {
+        QString sku, partName, partNumber, category, subCategory;
+        QString description, storage, rackNo, binNo;
+        int     serial = 0;
+        QString barcode, quarter, year, generatedAt;
+    };
+    QList<SerialRow> rows;
+
+    QSqlQuery q(m_db);
+    q.prepare(
+        "SELECT "
+        "  COALESCE(s.sku, b.sku)         AS sku, "
+        "  COALESCE(s.part_name,  '')      AS part_name, "
+        "  COALESCE(s.part_number,'')      AS part_number, "
+        "  COALESCE(s.category_code,'')    AS category, "
+        "  COALESCE(s.sub_category,'')     AS sub_category, "
+        "  COALESCE(s.description,'')      AS description, "
+        "  COALESCE(s.storage,'')          AS storage, "
+        "  COALESCE(s.rack_number,'')      AS rack_no, "
+        "  COALESCE(s.bin_number,'')       AS bin_no, "
+        "  b.serial, "
+        "  b.barcode, "
+        "  b.quarter, "
+        "  b.year, "
+        "  b.created_at "
+        "FROM barcode_log_active b "
+        "LEFT JOIN sku_catalog_active s ON s.sku = b.sku "
+        "ORDER BY COALESCE(s.sku, b.sku), b.year, b.quarter, b.serial");
+
+    if (!q.exec()) {
+        setStatus("Failed to query serial numbers.", false);
+        return;
+    }
+    while (q.next()) {
+        SerialRow r;
+        r.sku         = q.value(0).toString().trimmed().toUpper();
+        r.partName    = q.value(1).toString().trimmed();
+        r.partNumber  = q.value(2).toString().trimmed();
+        r.category    = q.value(3).toString().trimmed();
+        r.subCategory = q.value(4).toString().trimmed();
+        r.description = q.value(5).toString().trimmed();
+        r.storage     = q.value(6).toString().trimmed();
+        r.rackNo      = q.value(7).toString().trimmed();
+        r.binNo       = q.value(8).toString().trimmed();
+        r.serial      = q.value(9).toInt();
+        r.barcode     = q.value(10).toString().trimmed();
+        r.quarter     = QString("Q%1").arg(q.value(11).toInt());
+        r.year        = q.value(12).toString().trimmed();
+        r.generatedAt = q.value(13).toString().trimmed();
+        rows.append(r);
+    }
+
+    if (rows.isEmpty()) {
+        setStatus("No serial numbers found to export.", false);
+        return;
+    }
+
+    // -----------------------------------------------------------------------
+    // Build the SpreadsheetML XML document.
+    // -----------------------------------------------------------------------
+    auto xmlCell = [](const QString &styleId, const QString &type, const QString &value) -> QString {
+        const QString escaped = QString(value)
+            .replace("&",  "&amp;")
+            .replace("<",  "&lt;")
+            .replace(">",  "&gt;")
+            .replace("\"", "&quot;");
+        if (styleId.isEmpty()) {
+            return QString("   <Cell><Data ss:Type=\"%1\">%2</Data></Cell>\n").arg(type, escaped);
+        }
+        return QString("   <Cell ss:StyleID=\"%1\"><Data ss:Type=\"%2\">%3</Data></Cell>\n")
+            .arg(styleId, type, escaped);
+    };
+    auto numCell = [](const QString &styleId, int value) -> QString {
+        if (styleId.isEmpty()) {
+            return QString("   <Cell><Data ss:Type=\"Number\">%1</Data></Cell>\n").arg(value);
+        }
+        return QString("   <Cell ss:StyleID=\"%1\"><Data ss:Type=\"Number\">%2</Data></Cell>\n")
+            .arg(styleId).arg(value);
+    };
+
+    QString xml;
+    xml.reserve(512 * 1024);
+
+    // Header
+    xml += "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+           "<?mso-application progid=\"Excel.Sheet\"?>\n"
+           "<Workbook xmlns=\"urn:schemas-microsoft-com:office:spreadsheet\"\n"
+           " xmlns:o=\"urn:schemas-microsoft-com:office:office\"\n"
+           " xmlns:x=\"urn:schemas-microsoft-com:office:excel\"\n"
+           " xmlns:ss=\"urn:schemas-microsoft-com:office:spreadsheet\">\n";
+
+    // Styles
+    xml +=
+        " <Styles>\n"
+        "  <Style ss:ID=\"Default\" ss:Name=\"Normal\"/>\n"
+        // Column header row — amber background, white bold text
+        "  <Style ss:ID=\"hdr\">\n"
+        "   <Font ss:Bold=\"1\" ss:Color=\"#FFFFFF\" ss:Size=\"10\"/>\n"
+        "   <Interior ss:Color=\"#C05E02\" ss:Pattern=\"Solid\"/>\n"
+        "   <Alignment ss:Horizontal=\"Center\" ss:Vertical=\"Center\" ss:WrapText=\"1\"/>\n"
+        "   <Borders><Border ss:Position=\"Bottom\" ss:LineStyle=\"Continuous\" ss:Weight=\"2\" ss:Color=\"#7A3700\"/></Borders>\n"
+        "  </Style>\n"
+        // SKU group header row — light amber, dark bold text
+        "  <Style ss:ID=\"sku\">\n"
+        "   <Font ss:Bold=\"1\" ss:Color=\"#1C2128\" ss:Size=\"10\"/>\n"
+        "   <Interior ss:Color=\"#FFA657\" ss:Pattern=\"Solid\"/>\n"
+        "   <Borders><Border ss:Position=\"Bottom\" ss:LineStyle=\"Continuous\" ss:Weight=\"1\" ss:Color=\"#C05E02\"/></Borders>\n"
+        "  </Style>\n"
+        // Even serial row — very light steel
+        "  <Style ss:ID=\"even\">\n"
+        "   <Interior ss:Color=\"#F6F8FA\" ss:Pattern=\"Solid\"/>\n"
+        "  </Style>\n"
+        // Odd serial row — white
+        "  <Style ss:ID=\"odd\">\n"
+        "   <Interior ss:Color=\"#FFFFFF\" ss:Pattern=\"Solid\"/>\n"
+        "  </Style>\n"
+        // Serial number cell — bold
+        "  <Style ss:ID=\"even_ser\">\n"
+        "   <Font ss:Bold=\"1\"/>\n"
+        "   <Interior ss:Color=\"#F6F8FA\" ss:Pattern=\"Solid\"/>\n"
+        "   <Alignment ss:Horizontal=\"Center\"/>\n"
+        "  </Style>\n"
+        "  <Style ss:ID=\"odd_ser\">\n"
+        "   <Font ss:Bold=\"1\"/>\n"
+        "   <Interior ss:Color=\"#FFFFFF\" ss:Pattern=\"Solid\"/>\n"
+        "   <Alignment ss:Horizontal=\"Center\"/>\n"
+        "  </Style>\n"
+        " </Styles>\n";
+
+    // Worksheet — "All Serials"
+    xml += " <Worksheet ss:Name=\"All Serials\">\n";
+    xml += "  <Table ss:DefaultRowHeight=\"15\">\n";
+    // Column widths (matches header order below)
+    xml += "   <Column ss:Width=\"80\"/>\n";   // SKU
+    xml += "   <Column ss:Width=\"140\"/>\n";  // Part Name
+    xml += "   <Column ss:Width=\"110\"/>\n";  // Part Number
+    xml += "   <Column ss:Width=\"80\"/>\n";   // Category
+    xml += "   <Column ss:Width=\"100\"/>\n";  // Sub-Category
+    xml += "   <Column ss:Width=\"180\"/>\n";  // Description
+    xml += "   <Column ss:Width=\"100\"/>\n";  // Storage
+    xml += "   <Column ss:Width=\"70\"/>\n";   // Rack No.
+    xml += "   <Column ss:Width=\"70\"/>\n";   // Bin No.
+    xml += "   <Column ss:Width=\"60\"/>\n";   // Serial #
+    xml += "   <Column ss:Width=\"220\"/>\n";  // QR Code
+    xml += "   <Column ss:Width=\"60\"/>\n";   // Quarter
+    xml += "   <Column ss:Width=\"55\"/>\n";   // Year
+    xml += "   <Column ss:Width=\"140\"/>\n";  // Generated At
+
+    // --- Column header row ---
+    xml += "  <Row ss:AutoFitHeight=\"1\">\n";
+    const QStringList headers = {
+        "SKU", "Part Name", "Part Number", "Category", "Sub-Category",
+        "Description", "Storage", "Rack No.", "Bin No.",
+        "Serial #", "QR Code", "Quarter", "Year", "Generated At"
+    };
+    for (const QString &h : headers) {
+        xml += xmlCell("hdr", "String", h);
+    }
+    xml += "  </Row>\n";
+
+    // --- Data rows, grouped by SKU ---
+    QString lastSku;
+    int rowIndex = 0; // used to alternate row colours within a SKU group
+    for (const SerialRow &r : rows) {
+        // SKU group header whenever SKU changes
+        if (r.sku != lastSku) {
+            lastSku  = r.sku;
+            rowIndex = 0;
+            xml += "  <Row ss:AutoFitHeight=\"1\">\n";
+            xml += xmlCell("sku", "String", r.sku);
+            xml += xmlCell("sku", "String", r.partName);
+            xml += xmlCell("sku", "String", r.partNumber);
+            xml += xmlCell("sku", "String", r.category);
+            xml += xmlCell("sku", "String", r.subCategory);
+            xml += xmlCell("sku", "String", r.description);
+            xml += xmlCell("sku", "String", r.storage);
+            xml += xmlCell("sku", "String", r.rackNo);
+            xml += xmlCell("sku", "String", r.binNo);
+            xml += xmlCell("sku", "String", "");  // serial placeholder
+            xml += xmlCell("sku", "String", "");  // barcode placeholder
+            xml += xmlCell("sku", "String", "");
+            xml += xmlCell("sku", "String", "");
+            xml += xmlCell("sku", "String", "");
+            xml += "  </Row>\n";
+        }
+
+        // Serial detail row
+        const bool even = (rowIndex % 2 == 0);
+        const QString rowStyle    = even ? "even"    : "odd";
+        const QString serialStyle = even ? "even_ser" : "odd_ser";
+        ++rowIndex;
+
+        xml += "  <Row ss:AutoFitHeight=\"1\">\n";
+        xml += xmlCell(rowStyle, "String", r.sku);
+        xml += xmlCell(rowStyle, "String", r.partName);
+        xml += xmlCell(rowStyle, "String", r.partNumber);
+        xml += xmlCell(rowStyle, "String", r.category);
+        xml += xmlCell(rowStyle, "String", r.subCategory);
+        xml += xmlCell(rowStyle, "String", r.description);
+        xml += xmlCell(rowStyle, "String", r.storage);
+        xml += xmlCell(rowStyle, "String", r.rackNo);
+        xml += xmlCell(rowStyle, "String", r.binNo);
+        xml += numCell(serialStyle, r.serial);
+        xml += xmlCell(rowStyle, "String", r.barcode);
+        xml += xmlCell(rowStyle, "String", r.quarter);
+        xml += xmlCell(rowStyle, "String", r.year);
+        xml += xmlCell(rowStyle, "String", r.generatedAt);
+        xml += "  </Row>\n";
+    }
+
+    xml += "  </Table>\n";
+    // Freeze the header row
+    xml +=
+        "  <WorksheetOptions xmlns=\"urn:schemas-microsoft-com:office:excel\">\n"
+        "   <Selected/>\n"
+        "   <FreezePanes/>\n"
+        "   <FrozenNoSplit/>\n"
+        "   <SplitHorizontal>1</SplitHorizontal>\n"
+        "   <TopRowBottomPane>1</TopRowBottomPane>\n"
+        "   <ActivePane>2</ActivePane>\n"
+        "  </WorksheetOptions>\n";
+    xml += " </Worksheet>\n";
+
+    // ---- Summary sheet: one row per SKU with total serial count ----
+    xml += " <Worksheet ss:Name=\"Summary\">\n";
+    xml += "  <Table>\n";
+    xml += "   <Column ss:Width=\"80\"/>\n";
+    xml += "   <Column ss:Width=\"140\"/>\n";
+    xml += "   <Column ss:Width=\"110\"/>\n";
+    xml += "   <Column ss:Width=\"100\"/>\n";
+    xml += "   <Column ss:Width=\"100\"/>\n";
+    xml += "   <Column ss:Width=\"70\"/>\n";
+    xml += "   <Column ss:Width=\"70\"/>\n";
+    xml += "   <Column ss:Width=\"80\"/>\n";
+
+    // Header
+    xml += "  <Row>\n";
+    const QStringList sumHeaders = {
+        "SKU", "Part Name", "Part Number", "Storage", "Rack No.", "Bin No.", "Total Serials", "Last Generated"
+    };
+    for (const QString &h : sumHeaders) {
+        xml += xmlCell("hdr", "String", h);
+    }
+    xml += "  </Row>\n";
+
+    // Aggregate by SKU from already-sorted rows
+    struct SkuAgg {
+        QString sku, partName, partNumber, storage, rackNo, binNo, lastGenerated;
+        int count = 0;
+    };
+    QList<SkuAgg> aggs;
+    for (const SerialRow &r : rows) {
+        if (!aggs.isEmpty() && aggs.last().sku == r.sku) {
+            aggs.last().count++;
+            aggs.last().lastGenerated = r.generatedAt;
+        } else {
+            SkuAgg a;
+            a.sku = r.sku; a.partName = r.partName; a.partNumber = r.partNumber;
+            a.storage = r.storage; a.rackNo = r.rackNo; a.binNo = r.binNo;
+            a.lastGenerated = r.generatedAt; a.count = 1;
+            aggs.append(a);
+        }
+    }
+    int sumRow = 0;
+    for (const SkuAgg &a : aggs) {
+        const QString s = (sumRow % 2 == 0) ? "even" : "odd";
+        ++sumRow;
+        xml += "  <Row>\n";
+        xml += xmlCell(s, "String", a.sku);
+        xml += xmlCell(s, "String", a.partName);
+        xml += xmlCell(s, "String", a.partNumber);
+        xml += xmlCell(s, "String", a.storage);
+        xml += xmlCell(s, "String", a.rackNo);
+        xml += xmlCell(s, "String", a.binNo);
+        xml += numCell(s, a.count);
+        xml += xmlCell(s, "String", a.lastGenerated);
+        xml += "  </Row>\n";
+    }
+    xml += "  </Table>\n";
+    xml +=
+        "  <WorksheetOptions xmlns=\"urn:schemas-microsoft-com:office:excel\">\n"
+        "   <FreezePanes/>\n"
+        "   <FrozenNoSplit/>\n"
+        "   <SplitHorizontal>1</SplitHorizontal>\n"
+        "   <TopRowBottomPane>1</TopRowBottomPane>\n"
+        "   <ActivePane>2</ActivePane>\n"
+        "  </WorksheetOptions>\n";
+    xml += " </Worksheet>\n";
+
+    xml += "</Workbook>\n";
+
+    // Write to file
+    QFile file(targetPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        setStatus("Unable to write Excel file.", false);
+        return;
+    }
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out << xml;
+    file.close();
+
+    const int totalSerials = rows.size();
+    const int totalSkus    = aggs.size();
+    setStatus(QString("Exported %1 serials across %2 SKUs to %3")
+                  .arg(totalSerials).arg(totalSkus)
+                  .arg(QDir::toNativeSeparators(targetPath)), true);
+
+    logAction("EXCEL_EXPORT",
+              "ALL_SERIALS",
               QString(),
               targetPath,
               QString(),
