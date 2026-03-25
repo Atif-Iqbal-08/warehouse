@@ -13,6 +13,7 @@ class QLabel;
 class QComboBox;
 
 struct PrintSettings {
+    // These defaults mirror the physical sticker template used by warehouse staff.
     static constexpr qreal kLabelWidthMm = 50.0;
     static constexpr qreal kLabelHeightMm = 30.0;
     static constexpr qreal kQrWidthMm = 20.0;

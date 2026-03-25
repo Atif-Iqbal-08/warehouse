@@ -3,6 +3,7 @@
 #include "app_settings.h"
 #include "globals.h"
 #include "qrcodegen.hpp"
+#include <QActionGroup>
 #include <QAbstractItemView>
 #include <QAbstractButton>
 #include <QComboBox>
@@ -54,6 +55,7 @@
 #include <QPageSize>
 #include <QRandomGenerator>
 #include <QRegularExpression>
+#include <QProcess>
 #include <QProcessEnvironment>
 #include <QColor>
 #include <QPen>
@@ -85,11 +87,13 @@
 #include <QVBoxLayout>
 #include <QTimer>
 #include <QMouseEvent>
+#include <QPalette>
 #include <QResizeEvent>
 #include <QWheelEvent>
 #include <QSettings>
 #include <QSharedPointer>
 #include <QStatusBar>
+#include <QStyleHints>
 #include <exception>
 
 #ifdef Q_OS_WIN
@@ -99,6 +103,8 @@
 #endif
 
 namespace {
+// Image-heavy detail dialogs reuse this view so users can zoom and pan
+// product photos without losing the default fit-to-window behavior.
 class ZoomableImageView final : public QGraphicsView {
 public:
     explicit ZoomableImageView(QWidget *parent = nullptr)
@@ -179,6 +185,8 @@ private:
     bool m_userZoomed = false;
 };
 
+// The bundled seed files are simple CSV exports, so a focused local parser keeps
+// the import path easy to inspect and avoids pulling in a heavier dependency.
 QStringList parseCsvLine(const QString &line) {
     QStringList fields;
     QString field;
@@ -331,6 +339,62 @@ bool hasCommandLineFlag(const QStringList &args, const QString &name) {
     return false;
 }
 
+QString themePreferenceKey() {
+    return QStringLiteral("ui/theme");
+}
+
+bool systemPrefersDarkTheme() {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    return qApp && qApp->styleHints() && qApp->styleHints()->colorScheme() == Qt::ColorScheme::Dark;
+#else
+    return qApp && qApp->palette().color(QPalette::Window).lightness() < 128;
+#endif
+}
+
+QString tableSelectionStyleSheet(bool darkTheme) {
+    return darkTheme
+               ? QStringLiteral(R"(
+QTableView {
+    selection-background-color: #f6a23e;
+    selection-color: #10161d;
+}
+QTableView::item:selected {
+    background: #f6a23e;
+    color: #10161d;
+}
+QTableView::item:selected:!active {
+    background: #ffd091;
+    color: #10161d;
+}
+)")
+               : QStringLiteral(R"(
+QTableView {
+    selection-background-color: #f0a64b;
+    selection-color: #1d2732;
+}
+QTableView::item:selected {
+    background: #f0a64b;
+    color: #1d2732;
+}
+QTableView::item:selected:!active {
+    background: #f7c98d;
+    color: #1d2732;
+}
+)");
+}
+
+QString highlightedSkuFieldStyle(bool darkTheme) {
+    return darkTheme
+               ? QStringLiteral("QLineEdit { font-size: 18px; font-weight: 700; color: #ffb347; border: 1px solid #36506a; background-color: #10202d; border-radius: 10px; padding: 6px 10px; }")
+               : QStringLiteral("QLineEdit { font-size: 18px; font-weight: 700; color: #b55d00; border: 1px solid #d8b27d; background-color: #fff8f0; border-radius: 10px; padding: 6px 10px; }");
+}
+
+QString versionLabelStyle(bool darkTheme) {
+    return darkTheme
+               ? QStringLiteral("QLabel { color: #91a7bc; padding-right: 6px; font-weight: 600; }")
+               : QStringLiteral("QLabel { color: #58667a; padding-right: 6px; font-weight: 600; }");
+}
+
 QString g_runLogUsername = QStringLiteral("anonymous");
 QString g_runLogUserId = QStringLiteral("-");
 QString g_runLogRole = QStringLiteral("unknown");
@@ -384,6 +448,62 @@ QString configuredRunLogPath() {
     return dir.filePath(monthlyFile);
 }
 
+void appendRunLog(const QString &message);
+
+QString installerBootstrapPath() {
+    QString programData = QProcessEnvironment::systemEnvironment().value("PROGRAMDATA").trimmed();
+    if (programData.isEmpty()) {
+        programData = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation).trimmed();
+    }
+    if (programData.isEmpty()) {
+        return QString();
+    }
+    return QDir(QDir(programData).filePath(AppGlobals::appName())).filePath(AppGlobals::installerBootstrapFileName());
+}
+
+void importInstallerBootstrapSettingsIfNeeded() {
+    const QString bootstrapPath = installerBootstrapPath();
+    if (bootstrapPath.isEmpty() || !QFileInfo::exists(bootstrapPath)) {
+        return;
+    }
+
+    QSettings bootstrap(bootstrapPath, QSettings::IniFormat);
+    const QString dbPath = bootstrap.value("bootstrap/db_path").toString().trimmed();
+    const QString backupPath = bootstrap.value("bootstrap/backup_path").toString().trimmed();
+    const QString logConsent = bootstrap.value("bootstrap/log_consent").toString().trimmed().toLower();
+
+    if (dbPath.isEmpty() && backupPath.isEmpty() && logConsent.isEmpty()) {
+        return;
+    }
+
+    const QString fingerprint = QString::fromLatin1(
+        QCryptographicHash::hash(QStringList{dbPath, backupPath, logConsent}.join('\n').toUtf8(),
+                                 QCryptographicHash::Sha256)
+            .toHex());
+
+    QSettings settings;
+    const QString appliedFingerprint = settings.value("installer_bootstrap/fingerprint").toString().trimmed();
+    if (!fingerprint.isEmpty() && appliedFingerprint == fingerprint) {
+        return;
+    }
+
+    if (!dbPath.isEmpty()) {
+        settings.setValue("db/path", dbPath);
+    }
+    if (!backupPath.isEmpty()) {
+        settings.setValue("backup/path", backupPath);
+    }
+    if (!logConsent.isEmpty()) {
+        settings.setValue("logging/installer_consent", logConsent == "1" || logConsent == "true" || logConsent == "yes");
+    }
+
+    settings.setValue("installer_bootstrap/fingerprint", fingerprint);
+    settings.sync();
+
+    appendRunLog(QString("Imported installer bootstrap settings from %1")
+                     .arg(QDir::toNativeSeparators(bootstrapPath)));
+}
+
 void appendRunLog(const QString &message) {
     const QString trimmed = message.trimmed();
     if (trimmed.isEmpty()) {
@@ -407,6 +527,7 @@ void appendRunLog(const QString &message) {
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     setupUi();
+    importInstallerBootstrapSettingsIfNeeded();
     m_currentRoleKey = AppGlobals::roleKeyView();
     m_currentBaseRole = UserRole::ViewOnly;
     m_access = accessPolicyForBaseRole(UserRole::ViewOnly);
@@ -959,7 +1080,7 @@ bool MainWindow::verifyUserCredentials(const QString &username,
 bool MainWindow::promptCreateUser(const QString &forcedRoleKey, bool allowCancel) {
     QDialog dialog(this);
     dialog.setWindowTitle("Create User Account");
-    dialog.setStyleSheet(m_darkStyleSheet);
+    dialog.setStyleSheet(qApp ? qApp->styleSheet() : m_darkStyleSheet);
     QFormLayout *formLayout = new QFormLayout(&dialog);
 
     QLineEdit *nameField = new QLineEdit(&dialog);
@@ -1112,7 +1233,7 @@ bool MainWindow::ensureInitialAdmin() {
 bool MainWindow::promptLogin() {
     QDialog dialog(this);
     dialog.setWindowTitle("User Login");
-    dialog.setStyleSheet(m_darkStyleSheet);
+    dialog.setStyleSheet(qApp ? qApp->styleSheet() : m_darkStyleSheet);
     QFormLayout *formLayout = new QFormLayout(&dialog);
 
     QLineEdit *usernameField = new QLineEdit(&dialog);
@@ -2362,6 +2483,8 @@ bool MainWindow::createEncryptedBackup(const QString &sourcePath,
                                        qint64 *sizeOut,
                                        QString *metadataOut,
                                        QString *errorOut) {
+    // Read the live SQLite file into memory first so the encryption and verification
+    // stages operate on a stable byte sequence.
     QFile source(sourcePath);
     if (!source.open(QIODevice::ReadOnly)) {
         if (errorOut) {
@@ -2395,6 +2518,8 @@ bool MainWindow::createEncryptedBackup(const QString &sourcePath,
     bool encryptedOk = false;
 
 #ifdef Q_OS_WIN
+    // Prefer DPAPI on Windows so backups stay machine/user protected without asking
+    // operators to manage an extra secret.
     DATA_BLOB inBlob;
     inBlob.pbData = reinterpret_cast<BYTE *>(const_cast<char *>(plain.constData()));
     inBlob.cbData = static_cast<DWORD>(plain.size());
@@ -2422,6 +2547,9 @@ bool MainWindow::createEncryptedBackup(const QString &sourcePath,
 #endif
 
     if (!encryptedOk) {
+        // Non-Windows builds (or DPAPI failures) fall back to a deterministic XOR
+        // stream derived from the machine identity. It is weaker than DPAPI but keeps
+        // the backup format reversible for restore and verification.
         const QByteArray key = QCryptographicHash::hash((machineId() + "|warehouse-backup").toUtf8(),
                                                         QCryptographicHash::Sha256);
         encrypted = plain;
@@ -2734,117 +2862,115 @@ void MainWindow::setupUi() {
         }
     }
 
-    const QString darkTheme =
-        "QMainWindow { background-color: #0b0f14; color: #f7f9fc; }"
-        "QWidget { color: #f7f9fc; }"
-        "QGroupBox { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #131c26, stop:1 #0f151e); "
-        "  border: 1px solid #1f2a3a; border-radius: 12px; margin-top: 18px; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #ff8f1f; font-weight: 700; }"
-        "QLineEdit, QPlainTextEdit, QSpinBox, QComboBox {"
-        "  background-color: #0e1621; border: 1px solid #2a3a4f; border-radius: 8px; padding: 7px; color: #f7f9fc;"
-        "  selection-background-color: #ff8f1f; selection-color: #0b0f14; }"
-        "QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus { border: 1px solid #22c8ff; }"
-        "QComboBox QAbstractItemView { background-color: #0e1621; selection-background-color: #22c8ff; }"
-        "QTableView { background-color: #0e1621; gridline-color: #1f2a3a; selection-background-color: #233349; selection-color: #ffffff; }"
-        "QTableView::item { padding: 5px; }"
-        "QHeaderView::section { background-color: #17212e; color: #f7f9fc; border: 1px solid #243246; padding: 7px; font-weight: 600; }"
-        "QTableCornerButton::section { background-color: #17212e; border: 1px solid #243246; }"
-        "QPushButton { background-color: #1b2736; border: 1px solid #31445c; border-radius: 8px; padding: 8px 14px; font-weight: 600; }"
-        "QPushButton:hover { background-color: #243449; border-color: #3e5874; }"
-        "QPushButton:pressed { background-color: #18212d; }"
-        "QPushButton:disabled { background-color: #1a2430; color: #7f8a97; border-color: #2a3a4f; }"
-        "QPushButton#dashboardSearchButton, QPushButton#searchButton, QPushButton#generateBarcodeButton, QPushButton#saveButton {"
-        "  background-color: #ff8f1f; color: #0b0f14; border: 1px solid #ffb765; }"
-        "QPushButton#dashboardSearchButton:hover, QPushButton#searchButton:hover, QPushButton#generateBarcodeButton:hover, QPushButton#saveButton:hover {"
-        "  background-color: #ffa648; border-color: #ffd19a; }"
-        "QTabWidget::pane { border: 1px solid #1f2a3a; }"
-        "QTabBar::tab { background: #111720; color: #cfd7e3; padding: 8px 14px; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 6px; border: 1px solid #1f2a3a; }"
-        "QTabBar::tab:selected { background: #ff8f1f; color: #0b0f14; }"
-        "QTabBar::tab:hover { background: #1b2634; color: #ffffff; }"
-        "QMenuBar { background-color: #111720; color: #f7f9fc; border-bottom: 1px solid #1f2a3a; }"
-        "QMenuBar::item { background: transparent; padding: 4px 10px; }"
-        "QMenuBar::item:selected { background: #243449; color: #ffffff; }"
-        "QMenu { background-color: #111720; color: #f7f9fc; border: 1px solid #1f2a3a; }"
-        "QMenu::item { padding: 6px 20px 6px 20px; }"
-        "QMenu::item:selected { background: #324a6d; color: #ffffff; }"
-        "QMenu::separator { height: 1px; background: #243246; margin: 4px 8px; }"
-        "QScrollArea { background-color: transparent; border: none; }"
-        "QScrollArea#latestSkuScrollArea { background-color: #0c1118; border: 1px solid #1f2a3a; border-radius: 12px; }"
-        "QWidget#latestSkuContainer { background-color: #0c1118; }"
-        "QScrollBar:vertical { background: #10161f; width: 12px; margin: 0px; }"
-        "QScrollBar::handle:vertical { background: #2a3a4f; border-radius: 6px; min-height: 22px; }"
-        "QScrollBar::handle:vertical:hover { background: #3b5270; }"
-        "QScrollBar:horizontal { background: #10161f; height: 12px; margin: 0px; }"
-        "QScrollBar::handle:horizontal { background: #2a3a4f; border-radius: 6px; min-width: 22px; }"
-        "QScrollBar::handle:horizontal:hover { background: #3b5270; }"
-        "QLabel#companyLogoLabel { background-color: #131a23; border: 1px solid #2a3647; border-radius: 10px; padding: 6px; }"
-        "QLabel#softwareNameLabel { color: #ff8f1f; font-size: 18px; font-weight: 700; }"
-        "QLabel#companyNameLabel { color: #f7f9fc; font-weight: 600; }"
-        "QLabel#authorLabel { color: #22c8ff; font-style: italic; }"
-        "QFrame#metricTile { background-color: #101826; border: 1px solid #243246; border-radius: 10px; }"
-        "QLabel#metricTileTitle { color: #9fb0c6; font-size: 12px; font-weight: 600; }"
-        "QLabel#totalSkusValueLabel, QLabel#totalBarcodesValueLabel, QLabel#quarterBarcodesValueLabel, "
-        "QLabel#sdSerialsValueLabel, QLabel#skSerialsValueLabel, QLabel#smSerialsValueLabel { font-size: 20px; font-weight: 700; }"
-        "QLabel#totalSkusValueLabel { color: #ff8f1f; }"
-        "QLabel#totalBarcodesValueLabel { color: #22c8ff; }"
-        "QLabel#quarterBarcodesValueLabel { color: #f7f9fc; }"
-        "QLabel#sdSerialsValueLabel { color: #7cd66f; }"
-        "QLabel#skSerialsValueLabel { color: #ffd166; }"
-        "QLabel#smSerialsValueLabel { color: #ff9f80; }"
-        "QFrame#skuCard { background-color: #121a24; border: 1px solid #243246; border-radius: 12px; }"
-        "QFrame#skuCard:hover { border-color: #ff8f1f; }"
-        "QLabel#skuCardImage { background-color: #0e141d; border: 1px solid #2a3647; border-radius: 8px; }"
-        "QLabel#skuCardSku { color: #ffb765; font-weight: 700; }"
-        "QLabel#skuCardName { color: #f7f9fc; font-weight: 700; }"
-        "QLabel#skuCardMeta { color: #cfd7e3; font-weight: 600; }"
-        "QLabel#skuCardDate { color: #9fb0c6; }";
+    // The app ships with two branded palettes and a system-aware wrapper around them.
+    const QString darkTheme = QStringLiteral(R"(
+QMainWindow { background-color: #0b1118; color: #edf3f8; }
+QWidget { color: #edf3f8; font-family: "Segoe UI"; font-size: 10pt; }
+QGroupBox { background-color: #101a25; border: 1px solid #23384d; border-radius: 16px; margin-top: 20px; padding-top: 10px; }
+QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 8px; color: #ffb347; font-weight: 700; }
+QLineEdit, QPlainTextEdit, QSpinBox, QComboBox { background-color: #10202d; border: 1px solid #2b4158; border-radius: 10px; padding: 8px 10px; color: #f5f8fb; selection-background-color: #f6a23e; selection-color: #10161d; }
+QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus { background-color: #132433; border: 1px solid #56c4ff; }
+QComboBox QAbstractItemView, QListView { background-color: #10202d; border: 1px solid #2b4158; selection-background-color: #f6a23e; selection-color: #10161d; }
+QTableView { background-color: #0d1721; alternate-background-color: #11202d; gridline-color: #223446; border: 1px solid #203446; border-radius: 12px; }
+QTableView::item { padding: 6px; }
+QHeaderView::section, QTableCornerButton::section { background-color: #132231; color: #edf3f8; border: 1px solid #223446; padding: 8px; font-weight: 700; }
+QPushButton { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2b4057, stop:1 #1a2938); border: 1px solid #425c78; border-bottom: 4px solid #0d1722; border-radius: 10px; padding: 8px 14px 9px 14px; font-weight: 700; color: #edf3f8; }
+QPushButton:hover { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #35506c, stop:1 #223548); border-color: #5f86ae; }
+QPushButton:pressed { background-color: #162330; border-bottom: 1px solid #0b121a; padding-top: 10px; padding-bottom: 7px; }
+QPushButton:disabled { background-color: #17222e; color: #738396; border-color: #24384b; border-bottom-color: #101923; }
+QPushButton#dashboardSearchButton, QPushButton#searchButton, QPushButton#generateBarcodeButton, QPushButton#saveButton, QPushButton#printBarcodeButton, QPushButton#backupDbButton, QPushButton#historyRefreshButton { color: #12161d; background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffc76c, stop:1 #f28b2b); border: 1px solid #f3bb72; border-bottom: 4px solid #9d4f05; }
+QPushButton#updateButton, QPushButton#fillFromSearchButton, QPushButton#historyEditButton, QPushButton#browseImageButton { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #79cfff, stop:1 #289add); border: 1px solid #90d7ff; border-bottom: 4px solid #0a5783; color: #081522; }
+QPushButton#deleteSkuButton, QPushButton#deleteBarcodeButton, QPushButton#historyDeleteButton { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ff8a8f, stop:1 #d84852); border: 1px solid #ffb0b4; border-bottom: 4px solid #8c1a24; color: #fff4f5; }
+QPushButton#clearSearchButton, QPushButton#clearFormButton, QPushButton#clearBarcodeFieldsButton, QPushButton#historyClearFieldsButton { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #bdc8d4, stop:1 #8898aa); border: 1px solid #cad3dd; border-bottom: 4px solid #4a5563; color: #10161d; }
+QTabWidget::pane { border: 1px solid #203446; border-radius: 14px; top: -1px; background: #0f1a25; }
+QTabBar::tab { background: #101b27; color: #cbd7e3; padding: 9px 16px; border-top-left-radius: 10px; border-top-right-radius: 10px; margin-right: 6px; border: 1px solid #203446; }
+QTabBar::tab:selected { background: #f6a23e; color: #10161d; }
+QMenuBar, QMenu { background-color: #101b27; color: #edf3f8; border: 1px solid #203446; }
+QMenuBar::item { background: transparent; padding: 5px 10px; border-radius: 6px; }
+QMenuBar::item:selected, QMenu::item:selected { background: #223a4f; color: #ffffff; }
+QMenu::item { padding: 7px 20px; border-radius: 6px; }
+QMenu::separator { height: 1px; background: #203446; margin: 5px 8px; }
+QStatusBar { background-color: #0c1620; border-top: 1px solid #203446; }
+QScrollArea { background-color: transparent; border: none; }
+QScrollArea#latestSkuScrollArea { background-color: #0c1620; border: 1px solid #203446; border-radius: 14px; }
+QWidget#latestSkuContainer { background-color: #0c1620; }
+QScrollBar:vertical, QScrollBar:horizontal { background: #0e1823; }
+QScrollBar:vertical { width: 12px; margin: 0; }
+QScrollBar:horizontal { height: 12px; margin: 0; }
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: #334b63; border-radius: 6px; min-height: 24px; min-width: 24px; }
+QLabel#searchImagePreviewLabel, QLabel#barcodePreviewLabel, QLabel#barcodeSkuImageLabel, QLabel#historySkuImageLabel, QLabel#companyLogoLabel { background-color: #0d1721; border: 1px solid #223446; border-radius: 12px; padding: 6px; }
+QLabel#softwareNameLabel { color: #ffb347; font-size: 20px; font-weight: 800; }
+QLabel#companyNameLabel { color: #edf3f8; font-weight: 700; }
+QLabel#authorLabel { color: #79cfff; font-style: italic; }
+QFrame#metricTile, QFrame#skuCard { background-color: #111c28; border: 1px solid #223446; border-radius: 14px; }
+QFrame#skuCard:hover { border-color: #f6a23e; }
+QLabel#metricTileTitle { color: #94abc2; font-size: 12px; font-weight: 700; }
+QLabel#totalSkusValueLabel, QLabel#totalBarcodesValueLabel, QLabel#quarterBarcodesValueLabel, QLabel#sdSerialsValueLabel, QLabel#skSerialsValueLabel, QLabel#smSerialsValueLabel { font-size: 20px; font-weight: 800; }
+QLabel#totalSkusValueLabel, QLabel#skuCardSku { color: #ffc76c; }
+QLabel#totalBarcodesValueLabel { color: #79cfff; }
+QLabel#sdSerialsValueLabel { color: #7ad77f; }
+QLabel#skSerialsValueLabel { color: #ffd480; }
+QLabel#smSerialsValueLabel { color: #ffa88d; }
+QLabel#skuCardImage { background-color: #0c1620; border: 1px solid #223446; border-radius: 10px; }
+QLabel#skuCardName { color: #edf3f8; font-weight: 700; }
+QLabel#skuCardMeta { color: #c8d3df; font-weight: 600; }
+QLabel#skuCardDate { color: #8fa6bb; }
+)");
     m_darkStyleSheet = darkTheme;
 
-    m_lightStyleSheet =
-        "QMainWindow { background-color: #f6f7fb; color: #1b1f24; }"
-        "QWidget { color: #1b1f24; }"
-        "QGroupBox { background-color: #ffffff; border: 1px solid #d7dce3; border-radius: 10px; margin-top: 18px; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #2b5fab; font-weight: 700; }"
-        "QLineEdit, QPlainTextEdit, QSpinBox, QComboBox {"
-        "  background-color: #ffffff; border: 1px solid #c5ccd6; border-radius: 6px; padding: 6px; }"
-        "QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus { border: 1px solid #2b5fab; }"
-        "QComboBox QAbstractItemView { background-color: #ffffff; selection-background-color: #dbe9ff; }"
-        "QTableView { background-color: #ffffff; gridline-color: #d7dce3; selection-background-color: #dbe9ff; selection-color: #1b1f24; }"
-        "QHeaderView::section { background-color: #eef2f7; color: #1b1f24; border: 1px solid #d7dce3; padding: 6px; font-weight: 600; }"
-        "QPushButton { background-color: #f0f3f7; border: 1px solid #c5ccd6; border-radius: 6px; padding: 6px 12px; font-weight: 600; }"
-        "QPushButton:hover { background-color: #e4e9f1; }"
-        "QPushButton:pressed { background-color: #d9e0ea; }"
-        "QPushButton#dashboardSearchButton, QPushButton#searchButton, QPushButton#generateBarcodeButton, QPushButton#saveButton {"
-        "  background-color: #2b5fab; color: #ffffff; border: 1px solid #3b6fc2; }"
-        "QPushButton#dashboardSearchButton:hover, QPushButton#searchButton:hover, QPushButton#generateBarcodeButton:hover, QPushButton#saveButton:hover {"
-        "  background-color: #3b6fc2; }"
-        "QTabWidget::pane { border: 1px solid #d7dce3; }"
-        "QTabBar::tab { background: #e9edf3; color: #1b1f24; padding: 8px 14px; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 6px; border: 1px solid #d7dce3; }"
-        "QTabBar::tab:selected { background: #2b5fab; color: #ffffff; }"
-        "QTabBar::tab:hover { background: #dfe6ef; }"
-        "QScrollBar:vertical { background: #f0f2f6; width: 12px; margin: 0px; }"
-        "QScrollBar::handle:vertical { background: #c9d1dc; border-radius: 6px; min-height: 22px; }"
-        "QScrollBar::handle:vertical:hover { background: #b2bccb; }"
-        "QScrollBar:horizontal { background: #f0f2f6; height: 12px; margin: 0px; }"
-        "QScrollBar::handle:horizontal { background: #c9d1dc; border-radius: 6px; min-width: 22px; }"
-        "QScrollBar::handle:horizontal:hover { background: #b2bccb; }"
-        "QFrame#metricTile { background-color: #ffffff; border: 1px solid #d7dce3; border-radius: 10px; }"
-        "QLabel#metricTileTitle { color: #5b6573; font-size: 12px; font-weight: 600; }"
-        "QLabel#totalSkusValueLabel, QLabel#totalBarcodesValueLabel, QLabel#quarterBarcodesValueLabel, "
-        "QLabel#sdSerialsValueLabel, QLabel#skSerialsValueLabel, QLabel#smSerialsValueLabel { font-size: 20px; font-weight: 700; }"
-        "QLabel#totalSkusValueLabel { color: #d26a00; }"
-        "QLabel#totalBarcodesValueLabel { color: #007fb8; }"
-        "QLabel#quarterBarcodesValueLabel { color: #1b1f24; }"
-        "QLabel#sdSerialsValueLabel { color: #2f8f3d; }"
-        "QLabel#skSerialsValueLabel { color: #a87400; }"
-        "QLabel#smSerialsValueLabel { color: #b05a3c; }"
-        "QFrame#skuCard { background-color: #ffffff; border: 1px solid #d7dce3; border-radius: 12px; }"
-        "QFrame#skuCard:hover { border-color: #2b5fab; }"
-        "QLabel#skuCardImage { background-color: #f4f6fb; border: 1px solid #d7dce3; border-radius: 8px; }"
-        "QLabel#skuCardSku { color: #2b5fab; font-weight: 700; }"
-        "QLabel#skuCardName { color: #1b1f24; font-weight: 700; }"
-        "QLabel#skuCardMeta { color: #4a5568; font-weight: 600; }"
-        "QLabel#skuCardDate { color: #6b7280; }";
+    m_lightStyleSheet = QStringLiteral(R"(
+QMainWindow { background-color: #f6f1e8; color: #213040; }
+QWidget { color: #213040; font-family: "Segoe UI"; font-size: 10pt; }
+QGroupBox { background-color: #ffffff; border: 1px solid #d9e0e6; border-radius: 16px; margin-top: 20px; padding-top: 10px; }
+QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 8px; color: #b55d00; font-weight: 700; }
+QLineEdit, QPlainTextEdit, QSpinBox, QComboBox { background-color: #fffefb; border: 1px solid #cfd9e2; border-radius: 10px; padding: 8px 10px; color: #213040; selection-background-color: #f0a64b; selection-color: #1d2732; }
+QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus { background-color: #ffffff; border: 1px solid #3f8bc9; }
+QComboBox QAbstractItemView, QListView { background-color: #fffefb; border: 1px solid #cfd9e2; selection-background-color: #f0a64b; selection-color: #1d2732; }
+QTableView { background-color: #ffffff; alternate-background-color: #f7fafc; gridline-color: #d7dde5; border: 1px solid #d6dde6; border-radius: 12px; }
+QTableView::item { padding: 6px; }
+QHeaderView::section, QTableCornerButton::section { background-color: #eef3f7; color: #213040; border: 1px solid #d4dce5; padding: 8px; font-weight: 700; }
+QPushButton { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #e8eef4); border: 1px solid #cad5df; border-bottom: 4px solid #93a4b6; border-radius: 10px; padding: 8px 14px 9px 14px; font-weight: 700; color: #213040; }
+QPushButton:hover { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #dde7f0); border-color: #b5c4d3; }
+QPushButton:pressed { background-color: #d9e4ef; border-bottom: 1px solid #93a4b6; padding-top: 10px; padding-bottom: 7px; }
+QPushButton:disabled { background-color: #eef2f5; color: #8a95a3; border-color: #d9e0e6; border-bottom-color: #cfd7de; }
+QPushButton#dashboardSearchButton, QPushButton#searchButton, QPushButton#generateBarcodeButton, QPushButton#saveButton, QPushButton#printBarcodeButton, QPushButton#backupDbButton, QPushButton#historyRefreshButton { color: #1e1710; background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffd08b, stop:1 #f0a64b); border: 1px solid #e6b777; border-bottom: 4px solid #b56b19; }
+QPushButton#updateButton, QPushButton#fillFromSearchButton, QPushButton#historyEditButton, QPushButton#browseImageButton { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #a8ddff, stop:1 #67b7ea); border: 1px solid #8bc9f2; border-bottom: 4px solid #4f88b4; color: #0d2234; }
+QPushButton#deleteSkuButton, QPushButton#deleteBarcodeButton, QPushButton#historyDeleteButton { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffb2b2, stop:1 #ef7e83); border: 1px solid #eba0a4; border-bottom: 4px solid #b24d56; color: #4e1a20; }
+QPushButton#clearSearchButton, QPushButton#clearFormButton, QPushButton#clearBarcodeFieldsButton, QPushButton#historyClearFieldsButton { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #e8edf2, stop:1 #cfd8e2); border: 1px solid #c9d3dd; border-bottom: 4px solid #8a98a8; color: #213040; }
+QTabWidget::pane { border: 1px solid #d7dee6; border-radius: 14px; top: -1px; background: rgba(255, 255, 255, 0.85); }
+QTabBar::tab { background: #edf2f6; color: #213040; padding: 9px 16px; border-top-left-radius: 10px; border-top-right-radius: 10px; margin-right: 6px; border: 1px solid #d7dee6; }
+QTabBar::tab:selected { background: #c96d10; color: #ffffff; }
+QMenuBar, QMenu { background-color: #fffefb; color: #213040; border: 1px solid #d7dee6; }
+QMenuBar::item { background: transparent; padding: 5px 10px; border-radius: 6px; }
+QMenuBar::item:selected, QMenu::item:selected { background: #f5e8d6; }
+QMenu::item { padding: 7px 20px; border-radius: 6px; }
+QMenu::separator { height: 1px; background: #d8dfe6; margin: 5px 8px; }
+QStatusBar { background-color: rgba(255, 255, 255, 0.9); border-top: 1px solid #d7dee6; }
+QScrollArea { background-color: transparent; border: none; }
+QScrollArea#latestSkuScrollArea { background-color: rgba(255, 255, 255, 0.92); border: 1px solid #d7dee6; border-radius: 14px; }
+QWidget#latestSkuContainer { background-color: transparent; }
+QScrollBar:vertical, QScrollBar:horizontal { background: #edf2f6; }
+QScrollBar:vertical { width: 12px; margin: 0; }
+QScrollBar:horizontal { height: 12px; margin: 0; }
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: #c1ccd7; border-radius: 6px; min-height: 24px; min-width: 24px; }
+QLabel#searchImagePreviewLabel, QLabel#barcodePreviewLabel, QLabel#barcodeSkuImageLabel, QLabel#historySkuImageLabel, QLabel#companyLogoLabel { background-color: #fbfdff; border: 1px solid #d7dee6; border-radius: 12px; padding: 6px; }
+QLabel#softwareNameLabel { color: #b55d00; font-size: 20px; font-weight: 800; }
+QLabel#companyNameLabel { color: #213040; font-weight: 700; }
+QLabel#authorLabel { color: #2e7aa8; font-style: italic; }
+QFrame#metricTile, QFrame#skuCard { background-color: rgba(255, 255, 255, 0.94); border: 1px solid #d7dee6; border-radius: 14px; }
+QFrame#skuCard:hover { border-color: #c96d10; }
+QLabel#metricTileTitle { color: #607183; font-size: 12px; font-weight: 700; }
+QLabel#totalSkusValueLabel, QLabel#totalBarcodesValueLabel, QLabel#quarterBarcodesValueLabel, QLabel#sdSerialsValueLabel, QLabel#skSerialsValueLabel, QLabel#smSerialsValueLabel { font-size: 20px; font-weight: 800; }
+QLabel#totalSkusValueLabel, QLabel#skuCardSku { color: #b55d00; }
+QLabel#totalBarcodesValueLabel { color: #2e7aa8; }
+QLabel#sdSerialsValueLabel { color: #3f944a; }
+QLabel#skSerialsValueLabel { color: #9c6d08; }
+QLabel#smSerialsValueLabel { color: #b45d46; }
+QLabel#skuCardImage { background-color: #f7fafc; border: 1px solid #d7dee6; border-radius: 10px; }
+QLabel#skuCardName { color: #213040; font-weight: 700; }
+QLabel#skuCardMeta { color: #5d6d7e; font-weight: 600; }
+QLabel#skuCardDate { color: #7a8795; }
+)");
 
     m_mainTabs = ui->mainTabWidget;
 
@@ -3158,6 +3284,7 @@ void MainWindow::setupUi() {
     m_historyTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_historyTableView->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_historyTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_historyTableView->setContextMenuPolicy(Qt::CustomContextMenu);
     m_historyTableView->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     m_historyTableView->horizontalHeader()->setStretchLastSection(true);
 
@@ -3359,12 +3486,30 @@ void MainWindow::setupUi() {
     }
     connect(m_historyTableView->selectionModel(), &QItemSelectionModel::currentRowChanged, this, &MainWindow::onHistoryTableSelectionChanged);
     connect(m_resultsView, &QTableView::customContextMenuRequested, this, &MainWindow::showResultsContextMenu);
+    connect(m_historyTableView, &QTableView::customContextMenuRequested, this, &MainWindow::showHistoryContextMenu);
     connect(m_mainTabs, &QTabWidget::currentChanged, this, &MainWindow::onTabChanged);
 
     createMenusAndToolbars();
     registerUiInteractionLogging();
     m_printSettings.load();
-    applyTheme(Theme::Dark);
+    QSettings settings;
+    const QString savedTheme = settings.value(themePreferenceKey(), "dark").toString().trimmed().toLower();
+    Theme startupTheme = Theme::Dark;
+    if (savedTheme == "light") {
+        startupTheme = Theme::Light;
+    } else if (savedTheme == "system") {
+        startupTheme = Theme::System;
+    }
+    applyTheme(startupTheme);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    if (qApp && qApp->styleHints()) {
+        connect(qApp->styleHints(), &QStyleHints::colorSchemeChanged, this, [this]() {
+            if (m_currentTheme == Theme::System) {
+                applyTheme(Theme::System);
+            }
+        });
+    }
+#endif
     updateNoDbBanner();
 }
 
@@ -3378,11 +3523,26 @@ void MainWindow::createMenusAndToolbars() {
     m_actionExportSkuCsv = fileMenu->addAction("Export SKU Master (CSV)...");
     m_actionExportBarcodeSummaryCsv = fileMenu->addAction("Export QR Summary (CSV)...");
     fileMenu->addSeparator();
+    m_actionUninstall = fileMenu->addAction("Uninstall...");
     m_actionExit = fileMenu->addAction("Exit");
 
     QMenu *viewMenu = menuBar()->addMenu("&View");
     m_actionFullScreen = viewMenu->addAction("Full Screen");
     m_actionFullScreen->setCheckable(true);
+    QMenu *themeMenu = viewMenu->addMenu("Theme");
+    auto *themeActionGroup = new QActionGroup(this);
+    themeActionGroup->setExclusive(true);
+    m_actionThemeDark = themeMenu->addAction("Dark");
+    m_actionThemeLight = themeMenu->addAction("Light");
+    m_actionThemeSystem = themeMenu->addAction("System");
+    QAction *themeActions[] = { m_actionThemeDark, m_actionThemeLight, m_actionThemeSystem };
+    for (QAction *action : themeActions) {
+        if (!action) {
+            continue;
+        }
+        action->setCheckable(true);
+        themeActionGroup->addAction(action);
+    }
 
     QMenu *optionsMenu = menuBar()->addMenu("&Options");
     m_actionPrintSettings = optionsMenu->addAction("QR Code / Sticker Settings...");
@@ -3406,8 +3566,12 @@ void MainWindow::createMenusAndToolbars() {
     if (m_actionExportBarcodeSummaryCsv) {
         connect(m_actionExportBarcodeSummaryCsv, &QAction::triggered, this, &MainWindow::exportBarcodeSummaryCsv);
     }
+    connect(m_actionUninstall, &QAction::triggered, this, &MainWindow::onUninstallTriggered);
     connect(m_actionExit, &QAction::triggered, this, &MainWindow::onExitTriggered);
     connect(m_actionFullScreen, &QAction::toggled, this, &MainWindow::onFullScreenToggled);
+    connect(m_actionThemeDark, &QAction::triggered, this, &MainWindow::onThemeDark);
+    connect(m_actionThemeLight, &QAction::triggered, this, &MainWindow::onThemeLight);
+    connect(m_actionThemeSystem, &QAction::triggered, this, &MainWindow::onThemeSystem);
     connect(m_actionPrintSettings, &QAction::triggered, this, &MainWindow::onPrintSettingsTriggered);
     connect(m_actionManageUsers, &QAction::triggered, this, &MainWindow::onManageUsersTriggered);
     connect(m_actionSwitchUser, &QAction::triggered, this, &MainWindow::onSwitchUserTriggered);
@@ -3500,6 +3664,7 @@ void MainWindow::registerUiInteractionLogging() {
     wireAction(m_actionSaveDb, "actionSaveDb");
     wireAction(m_actionExportSkuCsv, "actionExportSkuCsv");
     wireAction(m_actionExportBarcodeSummaryCsv, "actionExportBarcodeSummaryCsv");
+    wireAction(m_actionUninstall, "actionUninstall");
     wireAction(m_actionExit, "actionExit");
     wireAction(m_actionFullScreen, "actionFullScreen");
     wireAction(m_actionThemeDark, "actionThemeDark");
@@ -3522,27 +3687,53 @@ void MainWindow::registerUiInteractionLogging() {
 }
 
 void MainWindow::applyTheme(Theme theme) {
-    Q_UNUSED(theme);
-    m_currentTheme = Theme::Dark;
-    qApp->setStyleSheet(m_darkStyleSheet);
+    // "System" preserves the operator's preference while resolving to one of our
+    // two curated palettes at runtime.
+    const bool useDarkTheme = (theme == Theme::System) ? systemPrefersDarkTheme()
+                                                       : (theme == Theme::Dark);
+    m_currentTheme = theme;
+    qApp->setStyleSheet(useDarkTheme ? m_darkStyleSheet : m_lightStyleSheet);
 
+    const QString selectionStyle = tableSelectionStyleSheet(useDarkTheme);
     if (m_resultsView) {
-        m_resultsView->setStyleSheet(
-            "QTableView::item:selected { background: #324a6d; color: #ffffff; }"
-            "QTableView { selection-background-color: #324a6d; selection-color: #ffffff; }");
+        m_resultsView->setStyleSheet(selectionStyle);
     }
+    if (m_historyTableView) {
+        m_historyTableView->setStyleSheet(selectionStyle);
+    }
+    if (m_barcodeTableView) {
+        m_barcodeTableView->setStyleSheet(selectionStyle);
+    }
+    if (m_skuField) {
+        m_skuField->setStyleSheet(highlightedSkuFieldStyle(useDarkTheme));
+    }
+    if (m_statusBarMessageLabel) {
+        m_statusBarMessageLabel->setStyleSheet("QLabel { padding-left: 4px; }");
+    }
+    if (m_statusBarVersionLabel) {
+        m_statusBarVersionLabel->setStyleSheet(versionLabelStyle(useDarkTheme));
+    }
+
+    QSettings settings;
+    QString themeValue = "dark";
+    if (theme == Theme::Light) {
+        themeValue = "light";
+    } else if (theme == Theme::System) {
+        themeValue = "system";
+    }
+    settings.setValue(themePreferenceKey(), themeValue);
 
     if (m_actionThemeDark) {
-        m_actionThemeDark->setChecked(true);
-        m_actionThemeDark->setEnabled(false);
+        m_actionThemeDark->setChecked(theme == Theme::Dark);
+        m_actionThemeDark->setEnabled(theme != Theme::Dark);
     }
     if (m_actionThemeLight) {
-        m_actionThemeLight->setChecked(false);
-        m_actionThemeLight->setEnabled(false);
+        m_actionThemeLight->setChecked(theme == Theme::Light);
+        m_actionThemeLight->setEnabled(theme != Theme::Light);
     }
     if (m_actionThemeSystem) {
-        m_actionThemeSystem->setChecked(false);
-        m_actionThemeSystem->setEnabled(false);
+        m_actionThemeSystem->setChecked(theme == Theme::System);
+        m_actionThemeSystem->setEnabled(theme != Theme::System);
     }
 }
 
@@ -3552,6 +3743,8 @@ bool MainWindow::selectDatabaseOnStartup() {
     const QString startupDbPath = commandLineValue(args, "--db-path");
     const bool suppressUacPrompt = hasCommandLineFlag(args, "--uac-db-relaunch");
 
+    // Startup path resolution is intentionally deterministic: explicit CLI override,
+    // then the last saved DB, and only then an interactive prompt.
     if (!startupDbPath.isEmpty()) {
         appendRunLog(QString("Startup override DB path requested: %1")
                          .arg(QDir::toNativeSeparators(startupDbPath)));
@@ -3661,6 +3854,8 @@ bool MainWindow::openDatabaseAt(const QString &path) {
         m_db.close();
     }
 
+    // Reuse a single named connection so reloads/backups do not leak duplicate
+    // SQLite handles inside the process.
     if (QSqlDatabase::contains("sku_connection")) {
         m_db = QSqlDatabase::database("sku_connection");
     } else {
@@ -3974,6 +4169,8 @@ bool MainWindow::shouldRunBootFallback() const {
 }
 
 bool MainWindow::runAutomatedBackup(const QString &trigger, bool silent) {
+    // Backups run against the database file path rather than the open SQLite handle so
+    // scheduled jobs keep working even when no operator has the backup screen open.
     const QString sourcePath = currentDatabasePath();
     if (sourcePath.isEmpty() || !QFile::exists(sourcePath)) {
         const QString msg = "Automated backup skipped: source database unavailable.";
@@ -4485,6 +4682,41 @@ void MainWindow::onBackupDbClicked() {
     onExportDbTriggered();
 }
 
+void MainWindow::onUninstallTriggered() {
+    const QDir appDir(QCoreApplication::applicationDirPath());
+    const QFileInfoList entries = appDir.entryInfoList(QStringList() << "unins*.exe",
+                                                       QDir::Files | QDir::Readable,
+                                                       QDir::Name | QDir::Reversed);
+    if (entries.isEmpty()) {
+        QMessageBox::information(this,
+                                 "Uninstall",
+                                 "Uninstaller was not found in this application folder.\n"
+                                 "This option is available for installed builds.");
+        return;
+    }
+
+    const QString uninstallerPath = entries.first().absoluteFilePath();
+    const auto reply = QMessageBox::question(
+        this,
+        "Uninstall",
+        "This will close the application and start the uninstaller.\n\nContinue?",
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (reply != QMessageBox::Yes) {
+        return;
+    }
+
+    if (!QProcess::startDetached(uninstallerPath, QStringList())) {
+        QMessageBox::warning(this,
+                             "Uninstall",
+                             QString("Unable to start uninstaller:\n%1")
+                                 .arg(QDir::toNativeSeparators(uninstallerPath)));
+        return;
+    }
+
+    QCoreApplication::quit();
+}
+
 void MainWindow::onExitTriggered() {
     close();
 }
@@ -4502,11 +4734,11 @@ void MainWindow::onThemeDark() {
 }
 
 void MainWindow::onThemeLight() {
-    applyTheme(Theme::Dark);
+    applyTheme(Theme::Light);
 }
 
 void MainWindow::onThemeSystem() {
-    applyTheme(Theme::Dark);
+    applyTheme(Theme::System);
 }
 
 void MainWindow::onHelpGuidesTriggered() {
@@ -4742,6 +4974,9 @@ bool MainWindow::initDb() {
 
 bool MainWindow::ensureSchema() {
     QSqlQuery q(m_db);
+
+    // This is both the initial bootstrap and the in-place migration path, so table
+    // creation stays additive and later column fixes are handled below.
     if (!q.exec(
             "CREATE TABLE IF NOT EXISTS sku_rules ("
             "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -5462,6 +5697,7 @@ QString MainWindow::barcodePrefixFromValue(const QString &barcodeValue) const {
 }
 
 QString MainWindow::buildBarcodeValue(const QString &sku, int serial, int year, int quarter, const QString &prefix) const {
+    // Canonical QR format: prefix + normalized SKU + quarter + two-digit year + fixed-width serial.
     const QString normalizedPrefix = normalizeBarcodePrefix(prefix);
     return QString("%1%2%3%4%5")
         .arg(normalizedPrefix)
@@ -5479,7 +5715,7 @@ QString MainWindow::stickerWebsiteForPrefix(const QString &prefix) const {
     if (normalizedPrefix == "SK") {
         return "www.skykart.in";
     }
-    return "Skylark Drones Manufacturing\nPrivate Limitd";
+    return "Skylark Drones Manufacturing\nPrivate Limited";
 }
 
 QImage MainWindow::stickerLogoForPrefix(const QString &prefix) const {
@@ -6636,6 +6872,8 @@ void MainWindow::generateBarcodes() {
     rows.reserve(quantity);
     m_lastGeneratedBarcodes.clear();
 
+    // Reserve and persist the full batch in one transaction so serial allocation stays
+    // contiguous even if one insert in the middle fails.
     m_db.transaction();
     QSqlQuery log(m_db);
     log.prepare("INSERT INTO barcode_log (sku, year, quarter, serial, barcode, created_at) VALUES (?,?,?,?,?,?)");
@@ -6909,17 +7147,17 @@ void MainWindow::onTabChanged(int index) {
     }
 }
 
-void MainWindow::printBarcodes() {
-    if (!requireAccess(m_access.canPrint, "You don't have permission to export PDF labels.")) {
-        return;
-    }
-
-    QStringList toPrint = m_lastGeneratedBarcodes;
-    if (toPrint.isEmpty()) {
-        const QString current = m_barcodeValueField->text().trimmed();
-        if (!current.isEmpty()) {
-            toPrint << current;
+void MainWindow::exportBarcodesToPdf(const QStringList &barcodes, const QString &selectedSkuHint) {
+    QStringList toPrint;
+    toPrint.reserve(barcodes.size());
+    QSet<QString> seen;
+    for (const QString &barcodeValue : barcodes) {
+        const QString barcode = barcodeValue.trimmed();
+        if (barcode.isEmpty() || seen.contains(barcode)) {
+            continue;
         }
+        seen.insert(barcode);
+        toPrint.append(barcode);
     }
 
     if (toPrint.isEmpty()) {
@@ -6927,11 +7165,7 @@ void MainWindow::printBarcodes() {
         return;
     }
 
-    QString selectedSku;
-    if (m_barcodeSkuCombo) {
-        selectedSku = extractSkuFromDisplay(m_barcodeSkuCombo->currentText());
-    }
-    QString safeSku = selectedSku.trimmed();
+    QString safeSku = selectedSkuHint.trimmed();
     safeSku.replace(QRegularExpression("[<>:\"/\\\\|?*\\x00-\\x1F]"), "_");
     safeSku.replace(QRegularExpression("\\s+"), " ");
     if (safeSku.isEmpty()) {
@@ -7186,6 +7420,44 @@ void MainWindow::printBarcodes() {
               true,
               QString(),
               chosen);
+}
+
+void MainWindow::printBarcodes() {
+    if (!requireAccess(m_access.canPrint, "You don't have permission to export PDF labels.")) {
+        return;
+    }
+
+    QStringList toPrint;
+    if (m_barcodeTableView && m_barcodeModel && m_barcodeTableView->selectionModel()) {
+        QModelIndexList selectedRows = m_barcodeTableView->selectionModel()->selectedRows();
+        std::sort(selectedRows.begin(), selectedRows.end(), [](const QModelIndex &left, const QModelIndex &right) {
+            return left.row() < right.row();
+        });
+        for (const QModelIndex &rowIndex : selectedRows) {
+            if (!rowIndex.isValid()) {
+                continue;
+            }
+            QStandardItem *barcodeItem = m_barcodeModel->item(rowIndex.row(), 0);
+            if (barcodeItem) {
+                toPrint.append(barcodeItem->text());
+            }
+        }
+    }
+    if (toPrint.isEmpty()) {
+        toPrint = m_lastGeneratedBarcodes;
+        if (toPrint.isEmpty()) {
+            const QString current = m_barcodeValueField ? m_barcodeValueField->text().trimmed() : QString();
+            if (!current.isEmpty()) {
+                toPrint << current;
+            }
+        }
+    }
+
+    QString selectedSku;
+    if (m_barcodeSkuCombo) {
+        selectedSku = extractSkuFromDisplay(m_barcodeSkuCombo->currentText());
+    }
+    exportBarcodesToPdf(toPrint, selectedSku);
 }
 
 void MainWindow::onBarcodeSkuInputChanged(const QString &text) {

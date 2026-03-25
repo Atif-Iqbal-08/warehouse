@@ -62,12 +62,14 @@ private slots:
     void onBarcodeSkuActivated(int index);
     void onBarcodeTableSelectionChanged(const QModelIndex &current, const QModelIndex &previous);
     void showResultsContextMenu(const QPoint &pos);
+    void showHistoryContextMenu(const QPoint &pos);
     void onHistorySkuInputChanged(const QString &text);
     void onHistorySkuChanged(int index);
     void loadHistoryForSelectedSku();
     void onHistoryTableSelectionChanged(const QModelIndex &current, const QModelIndex &previous);
     void deleteSelectedHistoryBarcodes();
     void editSelectedHistoryBarcode();
+    void exportSelectedHistoryBarcodesPdf();
     void onHistorySerialSearchChanged(const QString &text);
     void clearBarcodeFields();
     void clearHistoryFields();
@@ -80,6 +82,7 @@ private slots:
     void onExportDbTriggered();
     void onSaveDbTriggered();
     void onBackupDbClicked();
+    void onUninstallTriggered();
     void onExitTriggered();
     void onFullScreenToggled(bool enabled);
     void onThemeDark();
@@ -116,9 +119,12 @@ private:
         bool canExport = false;
     };
 
+    // UI composition and presentation.
     void setupUi();
     void createMenusAndToolbars();
     void applyTheme(Theme theme);
+
+    // Authentication, authorization and role management.
     void applyAccessControl(const QString &roleKey);
     AccessPolicy accessPolicyForBaseRole(UserRole role) const;
     bool requireAccess(bool allowed, const QString &message);
@@ -177,6 +183,8 @@ private:
     bool isStrongPassword(const QString &password, QString *reasonOut = nullptr) const;
     bool isPermissionDeniedOpenError(const QString &errorText) const;
     bool requestUacElevationForDatabase(const QString &dbPath, const QString &errorText);
+
+    // Run logging and backup/restore support.
     void syncRunLogIdentity();
     void appendRunLogWithUser(const QString &message) const;
     void registerUiInteractionLogging();
@@ -198,6 +206,8 @@ private:
     void scheduleNextBackupTick();
     bool shouldRunBootFallback() const;
     bool runAutomatedBackup(const QString &trigger, bool silent);
+
+    // SKU / QR generation helpers and screen refreshes.
     int totalQuantityForSku(const QString &sku) const;
     QString numberToWords(int value) const;
     void updateQuantityWordsLabels(const QString &sku);
@@ -242,6 +252,7 @@ protected:
     bool skuExists(const QString &sku) const;
     void loadSkuList(const QString &filter = QString(), bool preserveText = false);
     QImage renderQrCode(const QString &value) const;
+    void exportBarcodesToPdf(const QStringList &barcodes, const QString &selectedSkuHint = QString());
     void populateBarcodeModel(const QList<QStringList> &rows);
     void updateDashboardMetrics();
     void refreshLatestSkuCards();
@@ -279,6 +290,7 @@ protected:
     QSqlDatabase m_db;
     Ui::MainWindow *ui = nullptr;
 
+    // Search workspace widgets.
     QLineEdit *m_searchSku = nullptr;
     QLineEdit *m_searchPartNumber = nullptr;
     QLineEdit *m_searchPartName = nullptr;
@@ -294,6 +306,7 @@ protected:
     QLabel *m_statusBarVersionLabel = nullptr;
     QLabel *m_noDbBannerLabel = nullptr;
 
+    // SKU master form widgets.
     QLineEdit *m_skuField = nullptr;
     QLineEdit *m_partNameField = nullptr;
     QLineEdit *m_partNumberField = nullptr;
@@ -319,6 +332,7 @@ protected:
     QPushButton *m_updateButton = nullptr;
     QPushButton *m_deleteSkuButton = nullptr;
 
+    // Dashboard and history widgets.
     QTabWidget *m_mainTabs = nullptr;
     QPushButton *m_backupDbButton = nullptr;
     QLabel *m_totalSkusValueLabel = nullptr;
@@ -381,15 +395,18 @@ protected:
     Theme m_currentTheme = Theme::Dark;
     PrintSettings m_printSettings;
 
+    // Image payload cached while editing a SKU record.
     QByteArray m_imageBytes;
     QString m_legacyImagePath;
 
+    // Menu and toolbar actions.
     QAction *m_actionLoadDb = nullptr;
     QAction *m_actionRestoreBackup = nullptr;
     QAction *m_actionExportDb = nullptr;
     QAction *m_actionSaveDb = nullptr;
     QAction *m_actionExportSkuCsv = nullptr;
     QAction *m_actionExportBarcodeSummaryCsv = nullptr;
+    QAction *m_actionUninstall = nullptr;
     QAction *m_actionExit = nullptr;
     QAction *m_actionFullScreen = nullptr;
     QAction *m_actionThemeDark = nullptr;
@@ -410,6 +427,8 @@ protected:
     UserRole m_currentBaseRole = UserRole::FullAccess;
     AccessPolicy m_access;
     bool m_relaunchingElevated = false;
+
+    // Deferred UI refresh timers.
     QTimer *m_latestSkuRefreshTimer = nullptr;
     QTimer *m_autoBackupTimer = nullptr;
 };

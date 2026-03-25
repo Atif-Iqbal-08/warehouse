@@ -10,6 +10,10 @@
 #define Publisher "Skylark Drones Pvt. Ltd"
 #endif
 
+#ifndef BootstrapFileName
+#define BootstrapFileName "installer_bootstrap.ini"
+#endif
+
 #ifndef SourceDir
 #define SourceDir "dist\\staging"
 #endif
@@ -43,18 +47,21 @@ UsePreviousAppDir=no
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"
 
+[Dirs]
+Name: "{commonappdata}\{#AppName}"
+
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
 
+[INI]
+Filename: "{commonappdata}\{#AppName}\{#BootstrapFileName}"; Section: "bootstrap"; Key: "db_path"; String: "{code:GetDbPath}"
+Filename: "{commonappdata}\{#AppName}\{#BootstrapFileName}"; Section: "bootstrap"; Key: "backup_path"; String: "{code:GetBackupPath}"
+Filename: "{commonappdata}\{#AppName}\{#BootstrapFileName}"; Section: "bootstrap"; Key: "log_consent"; String: "{code:GetLogConsentValue}"
+
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\warehouse_sku_generator.exe"; IconFilename: "{app}\Assets\app_icon.ico"
+Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\warehouse_sku_generator.exe"; Tasks: desktopicon; IconFilename: "{app}\Assets\app_icon.ico"
-
-[Registry]
-Root: HKCU; Subkey: "Software\\Skylark Drones\\Warehouse SKU Generator\\db"; ValueType: string; ValueName: "path"; ValueData: "{code:GetDbPath}"; Flags: uninsdeletevalue
-Root: HKCU; Subkey: "Software\\Skylark Drones\\Warehouse SKU Generator\\backup"; ValueType: string; ValueName: "path"; ValueData: "{code:GetBackupPath}"; Flags: uninsdeletevalue
-Root: HKCU; Subkey: "Software\\Skylark Drones\\Warehouse SKU Generator\\bootstrap\\master_admin"; Flags: deletekey
-Root: HKCU; Subkey: "Software\\Skylark Drones\\Warehouse SKU Generator\\bootstrap\\developer_break_glass"; Flags: deletekey
 
 [Run]
 Filename: "{app}\warehouse_sku_generator.exe"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
@@ -64,6 +71,51 @@ var
   DbDirPage: TInputDirWizardPage;
   BackupDirPage: TInputDirWizardPage;
   LogConsentPage: TInputOptionWizardPage;
+
+function BootstrapConfigPath(): string;
+begin
+  Result := ExpandConstant('{commonappdata}\{#AppName}\{#BootstrapFileName}');
+end;
+
+function NormalizePathValue(Value: string): string;
+begin
+  Result := RemoveBackslashUnlessRoot(Trim(Value));
+end;
+
+function ReadBootstrapValue(const KeyName: string): string;
+begin
+  Result := Trim(GetIniString('bootstrap', KeyName, '', BootstrapConfigPath()));
+end;
+
+function DefaultDbDirValue(): string;
+var
+  ExistingDbPath: string;
+begin
+  ExistingDbPath := ReadBootstrapValue('db_path');
+  if ExistingDbPath <> '' then
+    Result := ExtractFileDir(ExistingDbPath)
+  else
+    Result := ExpandConstant('{userdocs}\\Warehouse SKU Generator');
+
+  Result := NormalizePathValue(Result);
+end;
+
+function DefaultBackupDirValue(): string;
+begin
+  Result := ReadBootstrapValue('backup_path');
+  if Result <> '' then
+    Result := NormalizePathValue(Result)
+  else
+    Result := '';
+end;
+
+function GetLogConsentValue(Param: string): string;
+begin
+  if LogConsentPage.Values[0] then
+    Result := 'true'
+  else
+    Result := 'false';
+end;
 
 procedure InitializeWizard();
 begin
@@ -75,7 +127,7 @@ begin
     False,
     '');
   DbDirPage.Add('Database folder:');
-  DbDirPage.Values[0] := ExpandConstant('{userdocs}\\Warehouse SKU Generator');
+  DbDirPage.Values[0] := DefaultDbDirValue();
 
   BackupDirPage := CreateInputDirPage(
     DbDirPage.ID,
@@ -85,7 +137,7 @@ begin
     False,
     '');
   BackupDirPage.Add('Backup folder:');
-  BackupDirPage.Values[0] := '';
+  BackupDirPage.Values[0] := DefaultBackupDirValue();
 
   LogConsentPage := CreateInputOptionPage(
     BackupDirPage.ID,

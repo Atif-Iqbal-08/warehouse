@@ -21,6 +21,407 @@ function Resolve-RepoPath {
     return Join-Path $RepoRoot $Path
 }
 
+function Resolve-Executable {
+    param(
+        [string]$CommandName,
+        [string[]]$Candidates = @()
+    )
+
+    $cmd = Get-Command $CommandName -ErrorAction SilentlyContinue
+    if ($cmd) {
+        return $cmd.Source
+    }
+
+    foreach ($candidate in $Candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+        if (Test-Path $candidate) {
+            return (Resolve-Path $candidate).Path
+        }
+    }
+
+    return $null
+}
+
+function Resolve-QtBinDirPath {
+    param([string]$RequestedQtBinDir)
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedQtBinDir)) {
+        $resolvedQtBinDir = Resolve-RepoPath $RequestedQtBinDir
+        if (-not (Test-Path $resolvedQtBinDir)) {
+            throw "Qt bin directory not found: $resolvedQtBinDir"
+        }
+        return (Resolve-Path $resolvedQtBinDir).Path
+    }
+
+    $windeployqtCmd = Get-Command windeployqt -ErrorAction SilentlyContinue
+    if ($windeployqtCmd) {
+        return (Split-Path -Parent $windeployqtCmd.Source)
+    }
+
+    $qmakeCmd = Get-Command qmake -ErrorAction SilentlyContinue
+    if ($qmakeCmd) {
+        $qtBinDir = (& $qmakeCmd.Source -query QT_INSTALL_BINS 2>$null).Trim()
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($qtBinDir) -and (Test-Path $qtBinDir)) {
+            return (Resolve-Path $qtBinDir).Path
+        }
+    }
+
+    $qtpathsCmd = Get-Command qtpaths -ErrorAction SilentlyContinue
+    if ($qtpathsCmd) {
+        $qtBinDir = (& $qtpathsCmd.Source --query QT_INSTALL_BINS 2>$null).Trim()
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($qtBinDir) -and (Test-Path $qtBinDir)) {
+            return (Resolve-Path $qtBinDir).Path
+        }
+    }
+
+    throw "Qt bin directory could not be resolved. Pass -QtBinDir or ensure qmake/windeployqt is in PATH."
+}
+
+function Resolve-MingwBinDir {
+    param([string]$QtBinDirPath)
+
+    $candidateDirs = @()
+
+    $gxxCmd = Get-Command g++ -ErrorAction SilentlyContinue
+    if ($gxxCmd) {
+        $candidateDirs += (Split-Path -Parent $gxxCmd.Source)
+    }
+
+    $objdumpCmd = Get-Command objdump -ErrorAction SilentlyContinue
+    if ($objdumpCmd) {
+        $candidateDirs += (Split-Path -Parent $objdumpCmd.Source)
+    }
+
+    $qtToolsCandidates = Get-ChildItem -Path "C:\Qt\Tools\mingw*\bin" -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.FullName }
+    $candidateDirs += $qtToolsCandidates
+
+    if (-not [string]::IsNullOrWhiteSpace($QtBinDirPath)) {
+        $qtRoot = Split-Path -Parent $QtBinDirPath
+        if ($qtRoot) {
+            $candidateDirs += Get-ChildItem -Path (Join-Path (Split-Path -Parent $qtRoot) "Tools\mingw*\bin") -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.FullName }
+        }
+    }
+
+    foreach ($candidate in $candidateDirs | Select-Object -Unique) {
+        if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path $candidate)) {
+            continue
+        }
+        if ((Test-Path (Join-Path $candidate "g++.exe")) -and
+            (Test-Path (Join-Path $candidate "libstdc++-6.dll")) -and
+            (Test-Path (Join-Path $candidate "libgcc_s_seh-1.dll")) -and
+            (Test-Path (Join-Path $candidate "libwinpthread-1.dll"))) {
+            return (Resolve-Path $candidate).Path
+        }
+    }
+
+    throw "MinGW runtime directory could not be resolved. Install Qt MinGW tools or add them to PATH."
+}
+
+function Resolve-ObjdumpPath {
+    param([string]$MingwBinDir)
+
+    $objdumpCandidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($MingwBinDir)) {
+        $objdumpCandidates += (Join-Path $MingwBinDir "objdump.exe")
+    }
+    $objdumpCandidates += Get-ChildItem -Path "C:\Qt\Tools\mingw*\bin\objdump.exe" -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending |
+        ForEach-Object { $_.FullName }
+
+    $objdumpPath = Resolve-Executable -CommandName "objdump" -Candidates $objdumpCandidates
+    if (-not $objdumpPath) {
+        throw "objdump.exe not found. It is required to verify packaged DLL dependencies."
+    }
+    return $objdumpPath
+}
+
+function Get-ImportedDllNames {
+    param(
+        [string]$BinaryPath,
+        [string]$ObjdumpPath
+    )
+
+    $objdumpOutput = & $ObjdumpPath -p $BinaryPath 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to inspect PE imports for $BinaryPath"
+    }
+
+    $imports = @()
+    foreach ($line in $objdumpOutput) {
+        if ($line -match 'DLL Name:\s+(.+)$') {
+            $imports += $matches[1].Trim()
+        }
+    }
+
+    return @($imports | Sort-Object -Unique)
+}
+
+function Should-StageRedistributable {
+    param([string]$DllName)
+
+    $normalized = $DllName.Trim().ToLowerInvariant()
+    if ($normalized -match '^(qt|lib).+\.dll$') {
+        return $true
+    }
+
+    return @(
+        "d3dcompiler_47.dll",
+        "opengl32sw.dll"
+    ) -contains $normalized
+}
+
+function Resolve-DependencySource {
+    param(
+        [string]$DllName,
+        [string[]]$SearchRoots
+    )
+
+    foreach ($root in $SearchRoots | Select-Object -Unique) {
+        if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path $root)) {
+            continue
+        }
+
+        $candidate = Join-Path $root $DllName
+        if (Test-Path $candidate) {
+            return (Resolve-Path $candidate).Path
+        }
+    }
+
+    return $null
+}
+
+function Copy-DependencyTree {
+    param(
+        [string[]]$RootBinaryPaths,
+        [string]$DestinationDir,
+        [string[]]$SearchRoots,
+        [string]$ObjdumpPath
+    )
+
+    $queue = [System.Collections.Queue]::new()
+    $visited = @{}
+    $missing = @()
+
+    foreach ($binaryPath in $RootBinaryPaths) {
+        if ([string]::IsNullOrWhiteSpace($binaryPath) -or -not (Test-Path $binaryPath)) {
+            continue
+        }
+        $queue.Enqueue((Resolve-Path $binaryPath).Path)
+    }
+
+    while ($queue.Count -gt 0) {
+        $currentPath = [string]$queue.Dequeue()
+        $currentKey = $currentPath.ToLowerInvariant()
+        if ($visited.ContainsKey($currentKey)) {
+            continue
+        }
+        $visited[$currentKey] = $true
+
+        foreach ($dllName in Get-ImportedDllNames -BinaryPath $currentPath -ObjdumpPath $ObjdumpPath) {
+            if (-not (Should-StageRedistributable -DllName $dllName)) {
+                continue
+            }
+
+            $stagedDllPath = Join-Path $DestinationDir $dllName
+            if (-not (Test-Path $stagedDllPath)) {
+                $sourcePath = Resolve-DependencySource -DllName $dllName -SearchRoots $SearchRoots
+                if (-not $sourcePath) {
+                    $missing += "$dllName (required by $(Split-Path -Leaf $currentPath))"
+                    continue
+                }
+                Copy-Item $sourcePath $stagedDllPath -Force
+            }
+
+            $queue.Enqueue((Resolve-Path $stagedDllPath).Path)
+        }
+    }
+
+    if ($missing.Count -gt 0) {
+        throw "Failed to copy redistributable DLLs: $($missing | Sort-Object -Unique -join ', ')"
+    }
+}
+
+function Get-StagedPluginBinaryPaths {
+    param([string]$StagingDir)
+
+    $pluginDirs = @("platforms", "sqldrivers", "imageformats", "styles")
+    $pluginBinaries = @()
+    foreach ($pluginDir in $pluginDirs) {
+        $resolvedPluginDir = Join-Path $StagingDir $pluginDir
+        if (-not (Test-Path $resolvedPluginDir)) {
+            continue
+        }
+        $pluginBinaries += Get-ChildItem -Path $resolvedPluginDir -Recurse -Filter *.dll -File -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.FullName }
+    }
+
+    return @($pluginBinaries | Sort-Object -Unique)
+}
+
+function Get-MissingStagedDependencies {
+    param(
+        [string[]]$RootBinaryPaths,
+        [string]$StagingDir,
+        [string]$ObjdumpPath
+    )
+
+    $queue = [System.Collections.Queue]::new()
+    $visited = @{}
+    $missing = @()
+
+    foreach ($binaryPath in $RootBinaryPaths) {
+        if ([string]::IsNullOrWhiteSpace($binaryPath)) {
+            continue
+        }
+        if (-not (Test-Path $binaryPath)) {
+            $missing += "$binaryPath (missing packaged binary)"
+            continue
+        }
+        $queue.Enqueue((Resolve-Path $binaryPath).Path)
+    }
+
+    while ($queue.Count -gt 0) {
+        $currentPath = [string]$queue.Dequeue()
+        $currentKey = $currentPath.ToLowerInvariant()
+        if ($visited.ContainsKey($currentKey)) {
+            continue
+        }
+        $visited[$currentKey] = $true
+
+        foreach ($dllName in Get-ImportedDllNames -BinaryPath $currentPath -ObjdumpPath $ObjdumpPath) {
+            if (-not (Should-StageRedistributable -DllName $dllName)) {
+                continue
+            }
+
+            $stagedDllPath = Join-Path $StagingDir $dllName
+            if (-not (Test-Path $stagedDllPath)) {
+                $missing += "$dllName (required by $(Split-Path -Leaf $currentPath))"
+                continue
+            }
+
+            $queue.Enqueue((Resolve-Path $stagedDllPath).Path)
+        }
+    }
+
+    return @($missing | Sort-Object -Unique)
+}
+
+function Copy-QtPluginSet {
+    param(
+        [string]$QtPluginsDir,
+        [string]$StagingDir
+    )
+
+    $pluginSpecs = @(
+        @{ RelativePath = "platforms\qwindows.dll"; Required = $true },
+        @{ RelativePath = "sqldrivers\qsqlite.dll"; Required = $true },
+        @{ RelativePath = "imageformats\qgif.dll"; Required = $false },
+        @{ RelativePath = "imageformats\qico.dll"; Required = $false },
+        @{ RelativePath = "imageformats\qjpeg.dll"; Required = $false },
+        @{ RelativePath = "styles\qmodernwindowsstyle.dll"; Required = $false }
+    )
+
+    $copiedPaths = @()
+    foreach ($pluginSpec in $pluginSpecs) {
+        $sourcePath = Join-Path $QtPluginsDir $pluginSpec.RelativePath
+        if (-not (Test-Path $sourcePath)) {
+            if ($pluginSpec.Required) {
+                throw "Required Qt plugin not found: $sourcePath"
+            }
+            continue
+        }
+
+        $destinationPath = Join-Path $StagingDir $pluginSpec.RelativePath
+        $destinationDir = Split-Path -Parent $destinationPath
+        if (-not (Test-Path $destinationDir)) {
+            New-Item -ItemType Directory -Path $destinationDir -Force | Out-Null
+        }
+
+        Copy-Item $sourcePath $destinationPath -Force
+        $copiedPaths += (Resolve-Path $destinationPath).Path
+    }
+
+    return @($copiedPaths)
+}
+
+function Copy-OptionalGraphicsRuntimes {
+    param(
+        [string]$QtBinDir,
+        [string]$StagingDir
+    )
+
+    foreach ($dllName in @("d3dcompiler_47.dll", "opengl32sw.dll")) {
+        $sourcePath = Join-Path $QtBinDir $dllName
+        if (-not (Test-Path $sourcePath)) {
+            continue
+        }
+
+        $destinationPath = Join-Path $StagingDir $dllName
+        if (-not (Test-Path $destinationPath)) {
+            Copy-Item $sourcePath $destinationPath -Force
+        }
+    }
+}
+
+function Invoke-WindeployQt {
+    param(
+        [string]$WindeployQtPath,
+        [string]$QtBinDir,
+        [string]$StagingExePath,
+        [string]$BuildConfig
+    )
+
+    if ([string]::IsNullOrWhiteSpace($WindeployQtPath) -or -not (Test-Path $WindeployQtPath)) {
+        return $false
+    }
+
+    $deployArgs = @()
+    $qtpathsPath = Join-Path $QtBinDir "qtpaths.exe"
+    if (Test-Path $qtpathsPath) {
+        $deployArgs += @("--qtpaths", $qtpathsPath)
+    }
+
+    $deployArgs += if ($BuildConfig -eq "Debug") { "--debug" } else { "--release" }
+    $deployArgs += @("--no-translations", "--compiler-runtime", $StagingExePath)
+
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    try {
+        $process = Start-Process -FilePath $WindeployQtPath `
+            -ArgumentList $deployArgs `
+            -NoNewWindow `
+            -Wait `
+            -PassThru `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath
+
+        if ($process.ExitCode -ne 0) {
+            $windeployMessages = @()
+            if (Test-Path $stdoutPath) {
+                $windeployMessages += Get-Content $stdoutPath -ErrorAction SilentlyContinue
+            }
+            if (Test-Path $stderrPath) {
+                $windeployMessages += Get-Content $stderrPath -ErrorAction SilentlyContinue
+            }
+            $windeployMessages = @($windeployMessages | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            if ($windeployMessages.Count -gt 0) {
+                Write-Warning "windeployqt output: $($windeployMessages -join ' | ')"
+            }
+        }
+
+        return ($process.ExitCode -eq 0)
+    } catch {
+        Write-Warning "windeployqt execution failed: $($_.Exception.Message)"
+        return $false
+    } finally {
+        Remove-Item $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Resolve-Path (Join-Path $ScriptDir "..")
 
@@ -125,41 +526,60 @@ if (Test-Path $docsDir) {
     }
 }
 
-$windeployqt = $null
-if ($QtBinDir) {
-    $candidate = Join-Path $QtBinDir "windeployqt.exe"
-    if (Test-Path $candidate) {
-        $windeployqt = $candidate
-    } else {
-        throw "windeployqt.exe not found in QtBinDir: $QtBinDir"
-    }
-} else {
-    $cmd = Get-Command windeployqt -ErrorAction SilentlyContinue
-    if ($cmd) {
-        $windeployqt = $cmd.Source
+$resolvedQtBinDir = Resolve-QtBinDirPath -RequestedQtBinDir $QtBinDir
+$qtRootDir = Split-Path -Parent $resolvedQtBinDir
+$qtPluginsDir = Join-Path $qtRootDir "plugins"
+if (-not (Test-Path $qtPluginsDir)) {
+    throw "Qt plugins directory not found: $qtPluginsDir"
+}
+
+$resolvedMingwBinDir = Resolve-MingwBinDir -QtBinDirPath $resolvedQtBinDir
+$objdumpPath = Resolve-ObjdumpPath -MingwBinDir $resolvedMingwBinDir
+$windeployqt = Resolve-Executable -CommandName "windeployqt" -Candidates @((Join-Path $resolvedQtBinDir "windeployqt.exe"))
+$stagingExe = Join-Path $stagingDir $exeName
+$requiredPluginPaths = @(
+    (Join-Path $stagingDir "platforms\qwindows.dll"),
+    (Join-Path $stagingDir "sqldrivers\qsqlite.dll")
+)
+
+$windeploySucceeded = $false
+if ($windeployqt) {
+    $windeploySucceeded = Invoke-WindeployQt -WindeployQtPath $windeployqt -QtBinDir $resolvedQtBinDir -StagingExePath $stagingExe -BuildConfig $BuildConfig
+    if (-not $windeploySucceeded) {
+        Write-Warning "windeployqt failed. Falling back to manual Qt/MinGW deployment."
     }
 }
 
-if ($windeployqt) {
-    $stagingExe = Join-Path $stagingDir $exeName
-    $deployMode = if ($BuildConfig -eq "Debug") { "--debug" } else { "--release" }
-    & $windeployqt $deployMode --no-translations --compiler-runtime $stagingExe | Out-Host
-} else {
-    $qtRuntimeFound = (Test-Path (Join-Path $exeDir "Qt6Core.dll")) -or (Test-Path (Join-Path $exeDir "Qt5Core.dll"))
-    if (-not $qtRuntimeFound) {
-        throw "windeployqt.exe not found and Qt runtime not detected in build output."
+$stagedPluginBinaryPaths = Get-StagedPluginBinaryPaths -StagingDir $stagingDir
+$missingRequiredPlugins = @($requiredPluginPaths | Where-Object { -not (Test-Path $_) })
+$missingStagedDependencies = Get-MissingStagedDependencies -RootBinaryPaths (@($stagingExe) + $stagedPluginBinaryPaths) -StagingDir $stagingDir -ObjdumpPath $objdumpPath
+
+if (-not $windeploySucceeded -or $missingRequiredPlugins.Count -gt 0 -or $missingStagedDependencies.Count -gt 0) {
+    if ($missingRequiredPlugins.Count -gt 0) {
+        Write-Warning "Packaged Qt plugins are incomplete: $($missingRequiredPlugins -join ', ')"
+    }
+    if ($missingStagedDependencies.Count -gt 0) {
+        Write-Warning "Packaged redistributable DLLs are incomplete: $($missingStagedDependencies -join ', ')"
     }
 
-    Copy-Item (Join-Path $exeDir "*") $stagingDir -Recurse -Force
-    $stagingData = Join-Path $stagingDir "data"
-    if (Test-Path $stagingData) {
-        Remove-Item -Recurse -Force $stagingData
-    }
+    $copiedPluginPaths = Copy-QtPluginSet -QtPluginsDir $qtPluginsDir -StagingDir $stagingDir
+    Copy-OptionalGraphicsRuntimes -QtBinDir $resolvedQtBinDir -StagingDir $stagingDir
 
-    $cleanupPatterns = @("*.o", "*.obj", "*.cpp", "*.h", "*.ui", "*.pro", "*.cmake")
-    foreach ($pattern in $cleanupPatterns) {
-        Get-ChildItem -Path $stagingDir -Recurse -Filter $pattern -File -ErrorAction SilentlyContinue | Remove-Item -Force
-    }
+    $rootBinariesForCopy = @($stagingExe) + $copiedPluginPaths + (Get-StagedPluginBinaryPaths -StagingDir $stagingDir)
+    $dependencySearchRoots = @($stagingDir, $resolvedQtBinDir, $resolvedMingwBinDir, $exeDir)
+    Copy-DependencyTree -RootBinaryPaths $rootBinariesForCopy -DestinationDir $stagingDir -SearchRoots $dependencySearchRoots -ObjdumpPath $objdumpPath
+
+    $stagedPluginBinaryPaths = Get-StagedPluginBinaryPaths -StagingDir $stagingDir
+    $missingRequiredPlugins = @($requiredPluginPaths | Where-Object { -not (Test-Path $_) })
+    $missingStagedDependencies = Get-MissingStagedDependencies -RootBinaryPaths (@($stagingExe) + $stagedPluginBinaryPaths) -StagingDir $stagingDir -ObjdumpPath $objdumpPath
+}
+
+if ($missingRequiredPlugins.Count -gt 0) {
+    throw "Installer staging is missing required Qt plugins: $($missingRequiredPlugins -join ', ')"
+}
+
+if ($missingStagedDependencies.Count -gt 0) {
+    throw "Installer staging is missing redistributable DLLs: $($missingStagedDependencies -join ', ')"
 }
 
 $iscc = $null
@@ -193,5 +613,8 @@ if (-not (Test-Path $issPath)) {
 }
 
 & $iscc "/DAppName=$AppName" "/DAppVersion=$AppVersion" "/DPublisher=$Publisher" "/DSourceDir=$stagingDir" "/DOutputDir=$resolvedOutputDir" $issPath | Out-Host
+if ($LASTEXITCODE -ne 0) {
+    throw "Installer compilation failed."
+}
 
 Write-Host "Installer built in: $resolvedOutputDir"

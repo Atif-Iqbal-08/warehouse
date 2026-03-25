@@ -36,7 +36,7 @@ QString websiteForPrefix(const QString &prefix) {
     if (normalized == "SK") {
         return "www.skykart.in";
     }
-    return "Skylark Drones Manufacturing\nPrivate Limitd";
+    return "Skylark Drones Manufacturing\nPrivate Limited";
 }
 } // namespace
 
@@ -288,6 +288,8 @@ void PrintSettingsDialog::updatePreview() {
         return;
     }
 
+    // Render the preview in screen pixels while keeping every placement decision in
+    // millimeters so the dialog matches the eventual print output.
     const int w = m_previewLabel->width();
     const int h = m_previewLabel->height();
     QImage preview(w, h, QImage::Format_ARGB32_Premultiplied);
@@ -433,6 +435,8 @@ void PrintSettingsDialog::updatePreview() {
     m_lastLogoSizeMm = logoSizeMm;
     m_lastLogoRectPx = QRectF();
     if (!logo.isNull() && logoSizeMm > 0.0) {
+        // The preview stores the logo anchor in millimeters so drag-and-drop stays
+        // stable even as the preview widget is resized.
         const qreal defaultLogoXmm = contentRightMm - logoSizeMm;
         const qreal defaultLogoYmm = contentTopMm;
         qreal logoXmm = m_logoPosXmm;

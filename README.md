@@ -90,6 +90,12 @@ Common options:
 .\build.ps1 -MakeTool "C:\Qt\Tools\mingw1310_64\bin\mingw32-make.exe"
 ```
 
+One-command app + installer build:
+
+```ps1
+.\build-all.ps1 -Clean -QtBinDir "C:\Qt\6.9.3\mingw_64\bin"
+```
+
 Manual qmake equivalent:
 
 ```ps1
@@ -101,6 +107,9 @@ C:\Qt\Tools\mingw1310_64\bin\mingw32-make.exe
 
 ## Windows Installer (Inno Setup)
 Installer build script defaults to qmake output (`build-qmake\`).
+
+The installer now writes machine-wide bootstrap defaults to `ProgramData\Warehouse SKU Generator\installer_bootstrap.ini`.
+On first launch after install or reinstall, the app imports those DB/backup defaults into the current user's settings, which keeps admin installs and per-user settings aligned without installer HKCU writes.
 
 Requirements:
 - Qt (for `windeployqt.exe`, unless Qt runtime DLLs are already in build output)

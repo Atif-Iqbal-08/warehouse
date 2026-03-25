@@ -7,11 +7,13 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QItemSelectionModel>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QMenu>
 #include <QModelIndex>
 #include <QSet>
 #include <QSpinBox>
@@ -250,6 +252,91 @@ void MainWindow::onHistoryTableSelectionChanged(const QModelIndex &current, cons
     Q_UNUSED(current);
     Q_UNUSED(previous);
     updateHistoryBarcodeDetails();
+}
+
+void MainWindow::showHistoryContextMenu(const QPoint &pos) {
+    if (!m_historyTableView || !m_historyModel || !m_historyTableView->selectionModel()) {
+        return;
+    }
+
+    const QModelIndex clickedIndex = m_historyTableView->indexAt(pos);
+    if (!clickedIndex.isValid()) {
+        return;
+    }
+
+    QItemSelectionModel *selectionModel = m_historyTableView->selectionModel();
+    if (!selectionModel->isRowSelected(clickedIndex.row(), QModelIndex())) {
+        m_historyTableView->selectRow(clickedIndex.row());
+    }
+
+    const int selectedCount = selectionModel->selectedRows().size();
+    QMenu menu(this);
+    QAction *exportSelectedAction = menu.addAction(
+        selectedCount > 0
+            ? QString("Export Selected Sticker PDF (%1)").arg(selectedCount)
+            : QString("Export Selected Sticker PDF..."));
+    if (!m_access.canPrint) {
+        exportSelectedAction->setEnabled(false);
+    }
+    const QAction *chosenAction = menu.exec(m_historyTableView->viewport()->mapToGlobal(pos));
+    if (chosenAction == exportSelectedAction) {
+        exportSelectedHistoryBarcodesPdf();
+    }
+}
+
+void MainWindow::exportSelectedHistoryBarcodesPdf() {
+    if (!requireAccess(m_access.canPrint, "You don't have permission to export PDF labels.")) {
+        return;
+    }
+    if (!m_historyTableView || !m_historyModel || !m_historyTableView->selectionModel()) {
+        setStatus("History table is not available.", false);
+        return;
+    }
+
+    QModelIndexList selectedRows = m_historyTableView->selectionModel()->selectedRows();
+    if (selectedRows.isEmpty()) {
+        setStatus("Select serial rows to export stickers.", false);
+        return;
+    }
+
+    std::sort(selectedRows.begin(), selectedRows.end(), [](const QModelIndex &left, const QModelIndex &right) {
+        return left.row() < right.row();
+    });
+
+    QStringList barcodes;
+    barcodes.reserve(selectedRows.size());
+    QSet<QString> seen;
+    for (const QModelIndex &rowIndex : selectedRows) {
+        if (!rowIndex.isValid()) {
+            continue;
+        }
+        QStandardItem *barcodeItem = m_historyModel->item(rowIndex.row(), 4);
+        if (!barcodeItem) {
+            continue;
+        }
+        const QString barcode = barcodeItem->text().trimmed();
+        if (barcode.isEmpty() || seen.contains(barcode)) {
+            continue;
+        }
+        seen.insert(barcode);
+        barcodes.append(barcode);
+    }
+    if (barcodes.isEmpty()) {
+        setStatus("No QR code values found in selected rows.", false);
+        return;
+    }
+
+    QString selectedSku = m_historySkuCombo ? extractSkuFromDisplay(m_historySkuCombo->currentText()) : QString();
+    if (selectedSku.isEmpty() && !selectedRows.isEmpty()) {
+        const QModelIndex firstRow = selectedRows.first();
+        if (firstRow.isValid()) {
+            QStandardItem *skuItem = m_historyModel->item(firstRow.row(), 0);
+            if (skuItem) {
+                selectedSku = skuItem->text().trimmed();
+            }
+        }
+    }
+    exportBarcodesToPdf(barcodes, selectedSku);
 }
 
 void MainWindow::editSelectedHistoryBarcode() {
