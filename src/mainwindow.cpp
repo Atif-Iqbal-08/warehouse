@@ -355,29 +355,29 @@ QString tableSelectionStyleSheet(bool darkTheme) {
     return darkTheme
                ? QStringLiteral(R"(
 QTableView {
-    selection-background-color: #f0883e;
-    selection-color: #0d1117;
+    selection-background-color: #ff7c38;
+    selection-color: #111118;
 }
 QTableView::item:selected {
-    background: #f0883e;
-    color: #0d1117;
+    background: #ff7c38;
+    color: #111118;
 }
 QTableView::item:selected:!active {
-    background: #f0a870;
-    color: #0d1117;
+    background: #c85a1a;
+    color: #e8e8f0;
 }
 )")
                : QStringLiteral(R"(
 QTableView {
-    selection-background-color: #d1680a;
+    selection-background-color: #dd6000;
     selection-color: #ffffff;
 }
 QTableView::item:selected {
-    background: #d1680a;
+    background: #dd6000;
     color: #ffffff;
 }
 QTableView::item:selected:!active {
-    background: #e07510;
+    background: #f07820;
     color: #ffffff;
 }
 )");
@@ -385,14 +385,14 @@ QTableView::item:selected:!active {
 
 QString highlightedSkuFieldStyle(bool darkTheme) {
     return darkTheme
-               ? QStringLiteral("QLineEdit { font-size: 18px; font-weight: 700; color: #f0883e; border: 1px solid #30363d; background-color: #21262d; border-radius: 8px; padding: 6px 10px; }")
-               : QStringLiteral("QLineEdit { font-size: 18px; font-weight: 700; color: #c05e02; border: 1px solid #d0d7de; background-color: #ffffff; border-radius: 8px; padding: 6px 10px; }");
+               ? QStringLiteral("QLineEdit { font-size: 15px; font-weight: 700; color: #ff7c38; border: 1px solid #2e2e42; background-color: #1e1e2b; border-radius: 7px; padding: 5px 10px; }")
+               : QStringLiteral("QLineEdit { font-size: 15px; font-weight: 700; color: #c85000; border: 1px solid #d0d0e0; background-color: #ffffff; border-radius: 7px; padding: 5px 10px; }");
 }
 
 QString versionLabelStyle(bool darkTheme) {
     return darkTheme
-               ? QStringLiteral("QLabel { color: #8b949e; padding-right: 6px; font-weight: 600; }")
-               : QStringLiteral("QLabel { color: #57606a; padding-right: 6px; font-weight: 600; }");
+               ? QStringLiteral("QLabel { color: #58587a; padding-right: 6px; font-weight: 500; font-size: 9pt; }")
+               : QStringLiteral("QLabel { color: #9898b8; padding-right: 6px; font-weight: 500; font-size: 9pt; }");
 }
 
 QString g_runLogUsername = QStringLiteral("anonymous");
@@ -2862,136 +2862,161 @@ void MainWindow::setupUi() {
         }
     }
 
-    // The app ships with two branded palettes and a system-aware wrapper around them.
-    // Industrial dark theme: deep charcoal steel with amber accents.
+    // ── DARK THEME ────────────────────────────────────────────────────────────
+    // Deep navy-charcoal base with warm orange accents. Clean, flat, modern.
+    // Palette: bg #111118 · surface #16161f · elevated #1e1e2b · border #2e2e42
+    //          text #e8e8f0 · muted #7878a0 · accent #ff7c38 · blue #4a8af7
     const QString darkTheme = QStringLiteral(R"(
-QMainWindow { background-color: #0d1117; color: #e6edf3; }
-QWidget { color: #e6edf3; font-family: "Segoe UI"; font-size: 10pt; }
-QGroupBox { background-color: #161b22; border: 1px solid #30363d; border-radius: 12px; margin-top: 22px; padding-top: 12px; }
-QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 8px; color: #f0883e; font-weight: 700; font-size: 10pt; }
-QLineEdit, QPlainTextEdit, QSpinBox, QComboBox { background-color: #21262d; border: 1px solid #30363d; border-radius: 8px; padding: 7px 10px; color: #e6edf3; selection-background-color: #f0883e; selection-color: #0d1117; }
-QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus { background-color: #21262d; border: 1px solid #388bfd; }
-QLineEdit:read-only { color: #8b949e; }
-QComboBox QAbstractItemView, QListView { background-color: #21262d; border: 1px solid #30363d; color: #e6edf3; selection-background-color: #f0883e; selection-color: #0d1117; }
-QTableView { background-color: #0d1117; alternate-background-color: #161b22; gridline-color: #21262d; border: 1px solid #30363d; border-radius: 10px; color: #e6edf3; }
-QTableView::item { padding: 6px; color: #e6edf3; }
-QHeaderView::section, QTableCornerButton::section { background-color: #161b22; color: #8b949e; border: 1px solid #30363d; padding: 8px; font-weight: 700; }
-QPushButton { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #30363d, stop:1 #21262d); border: 1px solid #30363d; border-bottom: 3px solid #010409; border-radius: 8px; padding: 8px 16px 9px 16px; font-weight: 700; color: #e6edf3; }
-QPushButton:hover { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3c434c, stop:1 #2d333b); border-color: #8b949e; }
-QPushButton:pressed { background-color: #21262d; border-bottom: 1px solid #010409; padding-top: 10px; padding-bottom: 7px; }
-QPushButton:disabled { background-color: #161b22; color: #484f58; border-color: #21262d; border-bottom-color: #0d1117; }
-QPushButton#dashboardSearchButton, QPushButton#searchButton, QPushButton#generateBarcodeButton, QPushButton#saveButton, QPushButton#printBarcodeButton, QPushButton#backupDbButton, QPushButton#historyRefreshButton { color: #0d1117; background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f0a84f, stop:1 #d66a00); border: 1px solid #f0883e; border-bottom: 3px solid #7d2e00; }
-QPushButton#dashboardSearchButton:hover, QPushButton#searchButton:hover, QPushButton#generateBarcodeButton:hover, QPushButton#saveButton:hover, QPushButton#printBarcodeButton:hover, QPushButton#backupDbButton:hover, QPushButton#historyRefreshButton:hover { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f5b866, stop:1 #e07510); }
-QPushButton#updateButton, QPushButton#fillFromSearchButton, QPushButton#historyEditButton, QPushButton#browseImageButton { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #58a6ff, stop:1 #1f6feb); border: 1px solid #388bfd; border-bottom: 3px solid #0c2d6b; color: #ffffff; }
-QPushButton#updateButton:hover, QPushButton#fillFromSearchButton:hover, QPushButton#historyEditButton:hover, QPushButton#browseImageButton:hover { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #79b8ff, stop:1 #388bfd); }
-QPushButton#deleteSkuButton, QPushButton#deleteBarcodeButton, QPushButton#historyDeleteButton { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f85149, stop:1 #da3633); border: 1px solid #f85149; border-bottom: 3px solid #6e1c1a; color: #ffffff; }
-QPushButton#deleteSkuButton:hover, QPushButton#deleteBarcodeButton:hover, QPushButton#historyDeleteButton:hover { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ff7b72, stop:1 #f85149); }
-QPushButton#clearSearchButton, QPushButton#clearFormButton, QPushButton#clearBarcodeFieldsButton, QPushButton#historyClearFieldsButton { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3c434c, stop:1 #2d333b); border: 1px solid #484f58; border-bottom: 3px solid #010409; color: #cdd9e5; }
-QPushButton#clearSearchButton:hover, QPushButton#clearFormButton:hover, QPushButton#clearBarcodeFieldsButton:hover, QPushButton#historyClearFieldsButton:hover { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #484f58, stop:1 #3c434c); }
-QTabWidget::pane { border: 1px solid #30363d; border-radius: 12px; top: -1px; background: #161b22; }
-QTabBar::tab { background: #161b22; color: #8b949e; padding: 9px 20px; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 4px; border: 1px solid #30363d; font-weight: 600; }
-QTabBar::tab:selected { background: #f0883e; color: #0d1117; font-weight: 700; }
-QTabBar::tab:hover:!selected { background: #21262d; color: #e6edf3; }
-QMenuBar, QMenu { background-color: #161b22; color: #e6edf3; border: 1px solid #30363d; }
-QMenuBar::item { background: transparent; padding: 5px 10px; border-radius: 6px; }
-QMenuBar::item:selected { background: #21262d; color: #e6edf3; }
-QMenu::item { padding: 7px 20px; border-radius: 4px; color: #e6edf3; }
-QMenu::item:selected { background: #30363d; color: #e6edf3; }
-QMenu::separator { height: 1px; background: #30363d; margin: 4px 8px; }
-QStatusBar { background-color: #161b22; border-top: 1px solid #30363d; color: #8b949e; }
+QMainWindow { background-color: #111118; color: #e8e8f0; }
+QWidget { color: #e8e8f0; font-family: "Segoe UI", "Inter", sans-serif; font-size: 10pt; }
+QDialog { background-color: #16161f; color: #e8e8f0; }
+QGroupBox { background-color: #16161f; border: 1px solid #2e2e42; border-radius: 9px; margin-top: 20px; padding-top: 10px; }
+QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #ff7c38; font-weight: 600; font-size: 9pt; }
+QLineEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox { background-color: #1e1e2b; border: 1px solid #2e2e42; border-radius: 6px; padding: 6px 10px; color: #e8e8f0; selection-background-color: #ff7c38; selection-color: #111118; min-height: 16px; }
+QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border: 1.5px solid #4a8af7; background-color: #21212e; }
+QLineEdit:read-only { color: #7878a0; background-color: #16161f; }
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled { color: #44445a; background-color: #16161f; border-color: #22222e; }
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox QAbstractItemView, QListView { background-color: #1e1e2b; border: 1px solid #2e2e42; color: #e8e8f0; selection-background-color: #ff7c38; selection-color: #111118; padding: 2px; outline: none; }
+QTableView { background-color: #111118; alternate-background-color: #141420; gridline-color: #1c1c28; border: 1px solid #2e2e42; border-radius: 8px; color: #e8e8f0; }
+QTableView::item { padding: 5px 8px; color: #e8e8f0; }
+QTableView::item:hover { background-color: #1e1e2b; }
+QHeaderView::section, QTableCornerButton::section { background-color: #16161f; color: #7878a0; border: none; border-bottom: 1px solid #2e2e42; border-right: 1px solid #2e2e42; padding: 6px 8px; font-weight: 600; font-size: 9pt; }
+QHeaderView::section:last { border-right: none; }
+QPushButton { background-color: #1e1e2b; border: 1px solid #2e2e42; border-radius: 6px; padding: 7px 14px; font-weight: 600; color: #c8c8e0; min-height: 14px; }
+QPushButton:hover { background-color: #252538; border-color: #3e3e5a; color: #e8e8f0; }
+QPushButton:pressed { background-color: #16161f; border-color: #2e2e42; }
+QPushButton:disabled { background-color: #16161f; color: #38384e; border-color: #1e1e2b; }
+QPushButton#dashboardSearchButton, QPushButton#searchButton, QPushButton#generateBarcodeButton, QPushButton#saveButton, QPushButton#printBarcodeButton, QPushButton#backupDbButton, QPushButton#historyRefreshButton { background-color: #ff7c38; border: none; border-radius: 6px; color: #111118; font-weight: 700; }
+QPushButton#dashboardSearchButton:hover, QPushButton#searchButton:hover, QPushButton#generateBarcodeButton:hover, QPushButton#saveButton:hover, QPushButton#printBarcodeButton:hover, QPushButton#backupDbButton:hover, QPushButton#historyRefreshButton:hover { background-color: #ff9355; }
+QPushButton#dashboardSearchButton:pressed, QPushButton#searchButton:pressed, QPushButton#generateBarcodeButton:pressed, QPushButton#saveButton:pressed, QPushButton#printBarcodeButton:pressed, QPushButton#backupDbButton:pressed, QPushButton#historyRefreshButton:pressed { background-color: #d95e1c; }
+QPushButton#dashboardSearchButton:disabled, QPushButton#searchButton:disabled, QPushButton#generateBarcodeButton:disabled, QPushButton#saveButton:disabled, QPushButton#printBarcodeButton:disabled { background-color: #2e2010; color: #5a3a1a; border: none; }
+QPushButton#updateButton, QPushButton#fillFromSearchButton, QPushButton#historyEditButton, QPushButton#browseImageButton { background-color: #4a8af7; border: none; border-radius: 6px; color: #ffffff; font-weight: 700; }
+QPushButton#updateButton:hover, QPushButton#fillFromSearchButton:hover, QPushButton#historyEditButton:hover, QPushButton#browseImageButton:hover { background-color: #6aa1ff; }
+QPushButton#updateButton:pressed, QPushButton#fillFromSearchButton:pressed, QPushButton#historyEditButton:pressed, QPushButton#browseImageButton:pressed { background-color: #2e6cd4; }
+QPushButton#deleteSkuButton, QPushButton#deleteBarcodeButton, QPushButton#historyDeleteButton { background-color: #e84848; border: none; border-radius: 6px; color: #ffffff; font-weight: 700; }
+QPushButton#deleteSkuButton:hover, QPushButton#deleteBarcodeButton:hover, QPushButton#historyDeleteButton:hover { background-color: #f06060; }
+QPushButton#deleteSkuButton:pressed, QPushButton#deleteBarcodeButton:pressed, QPushButton#historyDeleteButton:pressed { background-color: #c02828; }
+QPushButton#clearSearchButton, QPushButton#clearFormButton, QPushButton#clearBarcodeFieldsButton, QPushButton#historyClearFieldsButton { background-color: transparent; border: 1px solid #2e2e42; color: #7878a0; }
+QPushButton#clearSearchButton:hover, QPushButton#clearFormButton:hover, QPushButton#clearBarcodeFieldsButton:hover, QPushButton#historyClearFieldsButton:hover { background-color: #1e1e2b; color: #c8c8e0; border-color: #3e3e5a; }
+QTabWidget::pane { border: 1px solid #2e2e42; border-radius: 9px; top: -1px; background: #16161f; }
+QTabBar::tab { background: transparent; color: #7878a0; padding: 8px 18px; border-top-left-radius: 7px; border-top-right-radius: 7px; margin-right: 2px; border: 1px solid transparent; font-weight: 600; font-size: 9.5pt; }
+QTabBar::tab:selected { background: #16161f; color: #ff7c38; border: 1px solid #2e2e42; border-bottom-color: #16161f; font-weight: 700; }
+QTabBar::tab:hover:!selected { background: #1a1a28; color: #c8c8e0; }
+QMenuBar { background-color: #111118; color: #e8e8f0; border-bottom: 1px solid #2e2e42; }
+QMenuBar::item { background: transparent; padding: 5px 10px; border-radius: 5px; }
+QMenuBar::item:selected { background: #1e1e2b; }
+QMenu { background-color: #16161f; color: #e8e8f0; border: 1px solid #2e2e42; border-radius: 8px; padding: 4px 0; }
+QMenu::item { padding: 6px 20px; border-radius: 4px; margin: 1px 4px; }
+QMenu::item:selected { background: #252538; }
+QMenu::separator { height: 1px; background: #2e2e42; margin: 4px 8px; }
+QStatusBar { background-color: #111118; border-top: 1px solid #2e2e42; color: #58587a; font-size: 9pt; }
+QToolTip { background-color: #252538; color: #e8e8f0; border: 1px solid #3e3e5a; border-radius: 5px; padding: 4px 8px; font-size: 9pt; }
 QScrollArea { background-color: transparent; border: none; }
-QScrollArea#latestSkuScrollArea { background-color: #0d1117; border: 1px solid #30363d; border-radius: 12px; }
-QWidget#latestSkuContainer { background-color: #0d1117; }
-QScrollBar:vertical, QScrollBar:horizontal { background: #0d1117; border: none; }
-QScrollBar:vertical { width: 10px; margin: 0; }
-QScrollBar:horizontal { height: 10px; margin: 0; }
-QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: #30363d; border-radius: 5px; min-height: 20px; min-width: 20px; }
-QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: #484f58; }
+QScrollArea#latestSkuScrollArea { background-color: #111118; border: 1px solid #2e2e42; border-radius: 9px; }
+QWidget#latestSkuContainer { background-color: #111118; }
+QScrollBar:vertical { background: transparent; border: none; width: 8px; margin: 4px 2px; }
+QScrollBar:horizontal { background: transparent; border: none; height: 8px; margin: 2px 4px; }
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: #2e2e42; border-radius: 4px; min-height: 24px; min-width: 24px; }
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: #4a4a68; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
-QLabel#searchImagePreviewLabel, QLabel#barcodePreviewLabel, QLabel#barcodeSkuImageLabel, QLabel#historySkuImageLabel, QLabel#companyLogoLabel { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 4px; }
-QLabel#softwareNameLabel { color: #f0883e; font-size: 20px; font-weight: 800; }
-QLabel#companyNameLabel { color: #e6edf3; font-weight: 700; }
-QLabel#authorLabel { color: #58a6ff; font-style: italic; }
-QFrame#metricTile, QFrame#skuCard { background-color: #161b22; border: 1px solid #30363d; border-radius: 12px; }
-QFrame#skuCard:hover { border-color: #f0883e; background-color: #1c2128; }
-QLabel#metricTileTitle { color: #8b949e; font-size: 11px; font-weight: 700; }
-QLabel#totalSkusValueLabel, QLabel#totalBarcodesValueLabel, QLabel#quarterBarcodesValueLabel, QLabel#sdSerialsValueLabel, QLabel#skSerialsValueLabel, QLabel#smSerialsValueLabel { font-size: 22px; font-weight: 800; }
-QLabel#totalSkusValueLabel, QLabel#skuCardSku { color: #f0883e; }
-QLabel#totalBarcodesValueLabel { color: #58a6ff; }
-QLabel#sdSerialsValueLabel { color: #3fb950; }
-QLabel#skSerialsValueLabel { color: #ffa657; }
-QLabel#smSerialsValueLabel { color: #ff7b72; }
-QLabel#skuCardImage { background-color: #0d1117; border: 1px solid #30363d; border-radius: 8px; }
-QLabel#skuCardName { color: #e6edf3; font-weight: 700; }
-QLabel#skuCardMeta { color: #8b949e; font-weight: 600; }
-QLabel#skuCardDate { color: #6e7681; }
-QLabel#searchNotFoundLabel { color: #6e7681; font-size: 14px; font-weight: 600; background: transparent; }
+QLabel#searchImagePreviewLabel, QLabel#barcodePreviewLabel, QLabel#barcodeSkuImageLabel, QLabel#historySkuImageLabel, QLabel#companyLogoLabel { background-color: #16161f; border: 1px solid #2e2e42; border-radius: 8px; padding: 4px; }
+QLabel#softwareNameLabel { color: #ff7c38; font-size: 18px; font-weight: 700; }
+QLabel#companyNameLabel { color: #e8e8f0; font-weight: 700; }
+QLabel#authorLabel { color: #4a8af7; font-style: italic; }
+QFrame#metricTile, QFrame#skuCard { background-color: #16161f; border: 1px solid #2e2e42; border-radius: 10px; }
+QFrame#skuCard:hover { border-color: #ff7c38; background-color: #1c1c2a; }
+QLabel#metricTileTitle { color: #7878a0; font-size: 9pt; font-weight: 600; }
+QLabel#totalSkusValueLabel, QLabel#totalBarcodesValueLabel, QLabel#quarterBarcodesValueLabel, QLabel#sdSerialsValueLabel, QLabel#skSerialsValueLabel, QLabel#smSerialsValueLabel { font-size: 20px; font-weight: 700; }
+QLabel#totalSkusValueLabel, QLabel#skuCardSku { color: #ff7c38; }
+QLabel#totalBarcodesValueLabel { color: #4a8af7; }
+QLabel#sdSerialsValueLabel { color: #44c492; }
+QLabel#skSerialsValueLabel { color: #ffaa55; }
+QLabel#smSerialsValueLabel { color: #f06060; }
+QLabel#skuCardImage { background-color: #111118; border: 1px solid #2e2e42; border-radius: 6px; }
+QLabel#skuCardName { color: #e8e8f0; font-weight: 600; }
+QLabel#skuCardMeta { color: #7878a0; }
+QLabel#skuCardDate { color: #44445a; }
+QLabel#searchNotFoundLabel { color: #44445a; font-size: 13px; font-weight: 600; background: transparent; }
 )");
     m_darkStyleSheet = darkTheme;
 
-    // Industrial light theme: clean steel-white with amber accents.
+    // ── LIGHT THEME ───────────────────────────────────────────────────────────
+    // Soft white base with warm orange accents. Crisp, airy, professional.
+    // Palette: bg #f4f4fa · surface #ffffff · border #d4d4e8 · text #18182c
+    //          muted #5a5a80 · accent #dd6000 · blue #3b6ef0
     m_lightStyleSheet = QStringLiteral(R"(
-QMainWindow { background-color: #f6f8fa; color: #1c2128; }
-QWidget { color: #1c2128; font-family: "Segoe UI"; font-size: 10pt; }
-QGroupBox { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 12px; margin-top: 22px; padding-top: 12px; }
-QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 8px; color: #c05e02; font-weight: 700; font-size: 10pt; }
-QLineEdit, QPlainTextEdit, QSpinBox, QComboBox { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 8px; padding: 7px 10px; color: #1c2128; selection-background-color: #d1680a; selection-color: #ffffff; }
-QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus { background-color: #ffffff; border: 1px solid #0969da; }
-QLineEdit:read-only { background-color: #f6f8fa; color: #57606a; }
-QComboBox QAbstractItemView, QListView { background-color: #ffffff; border: 1px solid #d0d7de; color: #1c2128; selection-background-color: #c05e02; selection-color: #ffffff; }
-QTableView { background-color: #ffffff; alternate-background-color: #f6f8fa; gridline-color: #d8dee4; border: 1px solid #d0d7de; border-radius: 10px; color: #1c2128; }
-QTableView::item { padding: 6px; color: #1c2128; }
-QHeaderView::section, QTableCornerButton::section { background-color: #f6f8fa; color: #57606a; border: 1px solid #d0d7de; padding: 8px; font-weight: 700; }
-QPushButton { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f6f8fa, stop:1 #e8ecf0); border: 1px solid #d0d7de; border-bottom: 3px solid #b0b8c2; border-radius: 8px; padding: 8px 16px 9px 16px; font-weight: 700; color: #1c2128; }
-QPushButton:hover { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffffff, stop:1 #eff2f6); border-color: #8c959f; }
-QPushButton:pressed { background-color: #e8ecf0; border-bottom: 1px solid #b0b8c2; padding-top: 10px; padding-bottom: 7px; }
-QPushButton:disabled { background-color: #f6f8fa; color: #8c959f; border-color: #d0d7de; border-bottom-color: #c8d0d8; }
-QPushButton#dashboardSearchButton, QPushButton#searchButton, QPushButton#generateBarcodeButton, QPushButton#saveButton, QPushButton#printBarcodeButton, QPushButton#backupDbButton, QPushButton#historyRefreshButton { color: #ffffff; background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #d1680a, stop:1 #b35300); border: 1px solid #c05e02; border-bottom: 3px solid #7a3700; }
-QPushButton#dashboardSearchButton:hover, QPushButton#searchButton:hover, QPushButton#generateBarcodeButton:hover, QPushButton#saveButton:hover, QPushButton#printBarcodeButton:hover, QPushButton#backupDbButton:hover, QPushButton#historyRefreshButton:hover { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #e07510, stop:1 #c05e02); }
-QPushButton#updateButton, QPushButton#fillFromSearchButton, QPushButton#historyEditButton, QPushButton#browseImageButton { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #0969da, stop:1 #0552b5); border: 1px solid #0861c4; border-bottom: 3px solid #023580; color: #ffffff; }
-QPushButton#updateButton:hover, QPushButton#fillFromSearchButton:hover, QPushButton#historyEditButton:hover, QPushButton#browseImageButton:hover { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #218bff, stop:1 #0969da); }
-QPushButton#deleteSkuButton, QPushButton#deleteBarcodeButton, QPushButton#historyDeleteButton { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #cf222e, stop:1 #a40e26); border: 1px solid #cf222e; border-bottom: 3px solid #6e0a19; color: #ffffff; }
-QPushButton#deleteSkuButton:hover, QPushButton#deleteBarcodeButton:hover, QPushButton#historyDeleteButton:hover { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #e5534b, stop:1 #cf222e); }
-QPushButton#clearSearchButton, QPushButton#clearFormButton, QPushButton#clearBarcodeFieldsButton, QPushButton#historyClearFieldsButton { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #e8ecf0, stop:1 #d6dce3); border: 1px solid #c8d0d8; border-bottom: 3px solid #9aa4ae; color: #1c2128; }
-QPushButton#clearSearchButton:hover, QPushButton#clearFormButton:hover, QPushButton#clearBarcodeFieldsButton:hover, QPushButton#historyClearFieldsButton:hover { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #f0f4f8, stop:1 #e0e7ef); }
-QTabWidget::pane { border: 1px solid #d0d7de; border-radius: 12px; top: -1px; background: #ffffff; }
-QTabBar::tab { background: #f6f8fa; color: #57606a; padding: 9px 20px; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 4px; border: 1px solid #d0d7de; font-weight: 600; }
-QTabBar::tab:selected { background: #c05e02; color: #ffffff; font-weight: 700; }
-QTabBar::tab:hover:!selected { background: #e8ecf0; color: #1c2128; }
-QMenuBar, QMenu { background-color: #ffffff; color: #1c2128; border: 1px solid #d0d7de; }
-QMenuBar::item { background: transparent; padding: 5px 10px; border-radius: 6px; }
-QMenuBar::item:selected { background: #f6f8fa; color: #1c2128; border: 1px solid #d0d7de; }
-QMenu::item { padding: 7px 20px; border-radius: 4px; color: #1c2128; }
-QMenu::item:selected { background: #0969da; color: #ffffff; }
-QMenu::separator { height: 1px; background: #d0d7de; margin: 4px 8px; }
-QStatusBar { background-color: #f6f8fa; border-top: 1px solid #d0d7de; color: #57606a; }
+QMainWindow { background-color: #f4f4fa; color: #18182c; }
+QWidget { color: #18182c; font-family: "Segoe UI", "Inter", sans-serif; font-size: 10pt; }
+QDialog { background-color: #ffffff; color: #18182c; }
+QGroupBox { background-color: #ffffff; border: 1px solid #d4d4e8; border-radius: 9px; margin-top: 20px; padding-top: 10px; }
+QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #dd6000; font-weight: 600; font-size: 9pt; }
+QLineEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox { background-color: #ffffff; border: 1px solid #d4d4e8; border-radius: 6px; padding: 6px 10px; color: #18182c; selection-background-color: #dd6000; selection-color: #ffffff; min-height: 16px; }
+QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border: 1.5px solid #3b6ef0; background-color: #fafafe; }
+QLineEdit:read-only { background-color: #f4f4fa; color: #5a5a80; }
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled { color: #aaaac0; background-color: #f0f0f8; border-color: #dcdcec; }
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox QAbstractItemView, QListView { background-color: #ffffff; border: 1px solid #d4d4e8; color: #18182c; selection-background-color: #dd6000; selection-color: #ffffff; padding: 2px; outline: none; }
+QTableView { background-color: #ffffff; alternate-background-color: #f8f8fd; gridline-color: #e8e8f4; border: 1px solid #d4d4e8; border-radius: 8px; color: #18182c; }
+QTableView::item { padding: 5px 8px; color: #18182c; }
+QTableView::item:hover { background-color: #f0f0f9; }
+QHeaderView::section, QTableCornerButton::section { background-color: #f4f4fa; color: #5a5a80; border: none; border-bottom: 1px solid #d4d4e8; border-right: 1px solid #d4d4e8; padding: 6px 8px; font-weight: 600; font-size: 9pt; }
+QHeaderView::section:last { border-right: none; }
+QPushButton { background-color: #ffffff; border: 1px solid #d4d4e8; border-radius: 6px; padding: 7px 14px; font-weight: 600; color: #18182c; min-height: 14px; }
+QPushButton:hover { background-color: #f0f0f9; border-color: #b4b4d0; }
+QPushButton:pressed { background-color: #e8e8f4; }
+QPushButton:disabled { background-color: #f4f4fa; color: #aaaac0; border-color: #dcdcec; }
+QPushButton#dashboardSearchButton, QPushButton#searchButton, QPushButton#generateBarcodeButton, QPushButton#saveButton, QPushButton#printBarcodeButton, QPushButton#backupDbButton, QPushButton#historyRefreshButton { background-color: #dd6000; border: none; border-radius: 6px; color: #ffffff; font-weight: 700; }
+QPushButton#dashboardSearchButton:hover, QPushButton#searchButton:hover, QPushButton#generateBarcodeButton:hover, QPushButton#saveButton:hover, QPushButton#printBarcodeButton:hover, QPushButton#backupDbButton:hover, QPushButton#historyRefreshButton:hover { background-color: #f07015; }
+QPushButton#dashboardSearchButton:pressed, QPushButton#searchButton:pressed, QPushButton#generateBarcodeButton:pressed, QPushButton#saveButton:pressed, QPushButton#printBarcodeButton:pressed, QPushButton#backupDbButton:pressed, QPushButton#historyRefreshButton:pressed { background-color: #b84c00; }
+QPushButton#dashboardSearchButton:disabled, QPushButton#searchButton:disabled, QPushButton#generateBarcodeButton:disabled, QPushButton#saveButton:disabled, QPushButton#printBarcodeButton:disabled { background-color: #f0e0d4; color: #c09878; border: none; }
+QPushButton#updateButton, QPushButton#fillFromSearchButton, QPushButton#historyEditButton, QPushButton#browseImageButton { background-color: #3b6ef0; border: none; border-radius: 6px; color: #ffffff; font-weight: 700; }
+QPushButton#updateButton:hover, QPushButton#fillFromSearchButton:hover, QPushButton#historyEditButton:hover, QPushButton#browseImageButton:hover { background-color: #5a88ff; }
+QPushButton#updateButton:pressed, QPushButton#fillFromSearchButton:pressed, QPushButton#historyEditButton:pressed, QPushButton#browseImageButton:pressed { background-color: #2350cc; }
+QPushButton#deleteSkuButton, QPushButton#deleteBarcodeButton, QPushButton#historyDeleteButton { background-color: #d43030; border: none; border-radius: 6px; color: #ffffff; font-weight: 700; }
+QPushButton#deleteSkuButton:hover, QPushButton#deleteBarcodeButton:hover, QPushButton#historyDeleteButton:hover { background-color: #e84848; }
+QPushButton#deleteSkuButton:pressed, QPushButton#deleteBarcodeButton:pressed, QPushButton#historyDeleteButton:pressed { background-color: #b01818; }
+QPushButton#clearSearchButton, QPushButton#clearFormButton, QPushButton#clearBarcodeFieldsButton, QPushButton#historyClearFieldsButton { background-color: transparent; border: 1px solid #d4d4e8; color: #7878a0; }
+QPushButton#clearSearchButton:hover, QPushButton#clearFormButton:hover, QPushButton#clearBarcodeFieldsButton:hover, QPushButton#historyClearFieldsButton:hover { background-color: #f0f0f9; color: #18182c; border-color: #b4b4d0; }
+QTabWidget::pane { border: 1px solid #d4d4e8; border-radius: 9px; top: -1px; background: #ffffff; }
+QTabBar::tab { background: transparent; color: #7878a0; padding: 8px 18px; border-top-left-radius: 7px; border-top-right-radius: 7px; margin-right: 2px; border: 1px solid transparent; font-weight: 600; font-size: 9.5pt; }
+QTabBar::tab:selected { background: #ffffff; color: #dd6000; border: 1px solid #d4d4e8; border-bottom-color: #ffffff; font-weight: 700; }
+QTabBar::tab:hover:!selected { background: #f0f0f9; color: #18182c; }
+QMenuBar { background-color: #f4f4fa; color: #18182c; border-bottom: 1px solid #d4d4e8; }
+QMenuBar::item { background: transparent; padding: 5px 10px; border-radius: 5px; }
+QMenuBar::item:selected { background: #e8e8f4; }
+QMenu { background-color: #ffffff; color: #18182c; border: 1px solid #d4d4e8; border-radius: 8px; padding: 4px 0; }
+QMenu::item { padding: 6px 20px; border-radius: 4px; margin: 1px 4px; }
+QMenu::item:selected { background: #f0f0f9; }
+QMenu::separator { height: 1px; background: #d4d4e8; margin: 4px 8px; }
+QStatusBar { background-color: #f4f4fa; border-top: 1px solid #d4d4e8; color: #9898b8; font-size: 9pt; }
+QToolTip { background-color: #ffffff; color: #18182c; border: 1px solid #d4d4e8; border-radius: 5px; padding: 4px 8px; font-size: 9pt; }
 QScrollArea { background-color: transparent; border: none; }
-QScrollArea#latestSkuScrollArea { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 12px; }
-QWidget#latestSkuContainer { background-color: #f6f8fa; }
-QScrollBar:vertical, QScrollBar:horizontal { background: #f6f8fa; border: none; }
-QScrollBar:vertical { width: 10px; margin: 0; }
-QScrollBar:horizontal { height: 10px; margin: 0; }
-QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: #c8d0d8; border-radius: 5px; min-height: 20px; min-width: 20px; }
-QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: #9aa4ae; }
+QScrollArea#latestSkuScrollArea { background-color: #f4f4fa; border: 1px solid #d4d4e8; border-radius: 9px; }
+QWidget#latestSkuContainer { background-color: #f4f4fa; }
+QScrollBar:vertical { background: transparent; border: none; width: 8px; margin: 4px 2px; }
+QScrollBar:horizontal { background: transparent; border: none; height: 8px; margin: 2px 4px; }
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: #d4d4e8; border-radius: 4px; min-height: 24px; min-width: 24px; }
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: #aaaac8; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
-QLabel#searchImagePreviewLabel, QLabel#barcodePreviewLabel, QLabel#barcodeSkuImageLabel, QLabel#historySkuImageLabel, QLabel#companyLogoLabel { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 10px; padding: 4px; }
-QLabel#softwareNameLabel { color: #c05e02; font-size: 20px; font-weight: 800; }
-QLabel#companyNameLabel { color: #1c2128; font-weight: 700; }
-QLabel#authorLabel { color: #0969da; font-style: italic; }
-QFrame#metricTile, QFrame#skuCard { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 12px; }
-QFrame#skuCard:hover { border-color: #c05e02; background-color: #fdf6f0; }
-QLabel#metricTileTitle { color: #57606a; font-size: 11px; font-weight: 700; }
-QLabel#totalSkusValueLabel, QLabel#totalBarcodesValueLabel, QLabel#quarterBarcodesValueLabel, QLabel#sdSerialsValueLabel, QLabel#skSerialsValueLabel, QLabel#smSerialsValueLabel { font-size: 22px; font-weight: 800; }
-QLabel#totalSkusValueLabel, QLabel#skuCardSku { color: #c05e02; }
-QLabel#totalBarcodesValueLabel { color: #0969da; }
-QLabel#sdSerialsValueLabel { color: #1a7f37; }
-QLabel#skSerialsValueLabel { color: #7d4e00; }
-QLabel#smSerialsValueLabel { color: #a40e26; }
-QLabel#skuCardImage { background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; }
-QLabel#skuCardName { color: #1c2128; font-weight: 700; }
-QLabel#skuCardMeta { color: #57606a; font-weight: 600; }
-QLabel#skuCardDate { color: #8c959f; }
-QLabel#searchNotFoundLabel { color: #8c959f; font-size: 14px; font-weight: 600; background: transparent; }
+QLabel#searchImagePreviewLabel, QLabel#barcodePreviewLabel, QLabel#barcodeSkuImageLabel, QLabel#historySkuImageLabel, QLabel#companyLogoLabel { background-color: #f4f4fa; border: 1px solid #d4d4e8; border-radius: 8px; padding: 4px; }
+QLabel#softwareNameLabel { color: #dd6000; font-size: 18px; font-weight: 700; }
+QLabel#companyNameLabel { color: #18182c; font-weight: 700; }
+QLabel#authorLabel { color: #3b6ef0; font-style: italic; }
+QFrame#metricTile, QFrame#skuCard { background-color: #ffffff; border: 1px solid #d4d4e8; border-radius: 10px; }
+QFrame#skuCard:hover { border-color: #dd6000; background-color: #fffaf5; }
+QLabel#metricTileTitle { color: #7878a0; font-size: 9pt; font-weight: 600; }
+QLabel#totalSkusValueLabel, QLabel#totalBarcodesValueLabel, QLabel#quarterBarcodesValueLabel, QLabel#sdSerialsValueLabel, QLabel#skSerialsValueLabel, QLabel#smSerialsValueLabel { font-size: 20px; font-weight: 700; }
+QLabel#totalSkusValueLabel, QLabel#skuCardSku { color: #dd6000; }
+QLabel#totalBarcodesValueLabel { color: #3b6ef0; }
+QLabel#sdSerialsValueLabel { color: #1a9e6e; }
+QLabel#skSerialsValueLabel { color: #8c4a00; }
+QLabel#smSerialsValueLabel { color: #c02020; }
+QLabel#skuCardImage { background-color: #f4f4fa; border: 1px solid #d4d4e8; border-radius: 6px; }
+QLabel#skuCardName { color: #18182c; font-weight: 600; }
+QLabel#skuCardMeta { color: #7878a0; }
+QLabel#skuCardDate { color: #9898b8; }
+QLabel#searchNotFoundLabel { color: #9898b8; font-size: 13px; font-weight: 600; background: transparent; }
 )");
 
     m_mainTabs = ui->mainTabWidget;
@@ -7655,162 +7680,158 @@ void MainWindow::exportBarcodesToPdf(const QStringList &barcodes, const QString 
         return;
     }
 
-    const qreal edgeMarginMm = qMax<qreal>(0.0, m_printSettings.edgeMarginMm);
-    const qreal contentLeftMm = edgeMarginMm;
-    const qreal contentTopMm = edgeMarginMm;
-    const qreal contentRightMm = qMax(contentLeftMm + 1.0, labelWidthMm - edgeMarginMm);
-    const qreal contentBottomMm = qMax(contentTopMm + 1.0, labelHeightMm - edgeMarginMm);
-    const qreal contentHeightMm = qMax(1.0, contentBottomMm - contentTopMm);
+    // ── geometry ──────────────────────────────────────────────────────────
+    const qreal edgeMarginMm  = qMax<qreal>(0.0, m_printSettings.edgeMarginMm);
+    const qreal innerMarginMm = qMax<qreal>(0.0, m_printSettings.innerMarginMm);
+    const qreal contentLeftMm   = edgeMarginMm;
+    const qreal contentTopMm    = edgeMarginMm;
+    const qreal contentRightMm  = qMax(contentLeftMm + 1.0, labelWidthMm - edgeMarginMm);
+    const qreal contentBottomMm = qMax(contentTopMm  + 1.0, labelHeightMm - edgeMarginMm);
+    const qreal contentWidthMm  = contentRightMm - contentLeftMm;
 
-    const qreal qrWidthMm = m_printSettings.barcodeWidthMm;
+    const qreal qrWidthMm  = m_printSettings.barcodeWidthMm;
     const qreal qrHeightMm = m_printSettings.barcodeHeightMm;
-    const qreal qrXmm = qMax(contentLeftMm, contentRightMm - qrWidthMm);
-    const qreal qrYmm = qMax(contentTopMm, contentBottomMm - qrHeightMm);
     const qreal logoSizeMm = qMax<qreal>(0.0, m_printSettings.logoSizeMm);
-    const qreal textLeftMm = qMax(m_printSettings.innerMarginMm, contentLeftMm);
-    const qreal interBlockGapMm = edgeMarginMm;
-    const qreal textRightMm = qMax(textLeftMm + 1.0, qrXmm - interBlockGapMm);
-    const qreal textBlockWidthMm = qMax(1.0, textRightMm - textLeftMm);
-    const qreal textTopMm = contentTopMm;
+
+    // ── font metrics ──────────────────────────────────────────────────────
+    const qreal ptToMm          = 25.4 / 72.0;
+    const qreal partLineHeightMm= qMax<qreal>(1.0, m_printSettings.partNameFontSizePt * ptToMm * 1.35);
+    const qreal detailLineHeightMm = qMax<qreal>(1.0, m_printSettings.detailFontSizePt * ptToMm * 1.35);
+    // Part-name header: 2 wrapped lines
+    const qreal partNameHeightMm = partLineHeightMm * 2.0;
+
     int maxSiteLineRows = 1;
-    for (int itemIndex = 0; itemIndex < items.size(); ++itemIndex) {
-        const QString prefix = barcodePrefixFromValue(items.at(itemIndex).barcode);
-        const int rows = qMax(1, stickerWebsiteForPrefix(prefix).count('\n') + 1);
+    for (int idx = 0; idx < items.size(); ++idx) {
+        const int rows = qMax(1, stickerWebsiteForPrefix(barcodePrefixFromValue(items.at(idx).barcode)).count('\n') + 1);
         maxSiteLineRows = qMax(maxSiteLineRows, rows);
     }
+    Q_UNUSED(maxSiteLineRows)
 
-    const int partNameLines = 3;
-    const int detailLines = 4 + maxSiteLineRows;
-    const qreal partFontScale = 1.0;
-    const qreal ptToMm = 25.4 / 72.0;
-    qreal textScale = 1.0;
-    qreal partLineHeightMm = qMax<qreal>(1.0, m_printSettings.partNameFontSizePt * partFontScale * ptToMm * 1.35);
-    qreal detailLineHeightMm = qMax<qreal>(1.0, m_printSettings.detailFontSizePt * ptToMm * 1.35);
-    qreal partNameHeightMm = partLineHeightMm * partNameLines;
-    qreal detailHeightMm = detailLineHeightMm * detailLines;
-    const qreal totalTextHeightMm = partNameHeightMm + detailHeightMm;
-    if (totalTextHeightMm > contentHeightMm && totalTextHeightMm > 0.0) {
-        textScale = contentHeightMm / totalTextHeightMm;
-        partLineHeightMm *= textScale;
-        detailLineHeightMm *= textScale;
-        partNameHeightMm = partLineHeightMm * partNameLines;
-    }
+    // ── default element positions ─────────────────────────────────────────
+    // Part Name: full-width header, no left indent, top of content area.
+    const qreal defPartNameXmm  = contentLeftMm;
+    const qreal defPartNameYmm  = contentTopMm;
 
+    // QR Code: right side, directly below the part-name header.
+    const qreal defQrXmm = qMax(contentLeftMm, contentRightMm - qrWidthMm);
+    const qreal defQrYmm = contentTopMm + partNameHeightMm;
+
+    // Info Block: left side, below header; right edge stops before QR code.
+    const qreal resolvedQrXmm   = (m_printSettings.qrPosXmm >= 0.0) ? m_printSettings.qrPosXmm : defQrXmm;
+    const qreal infoXdefaultMm  = contentLeftMm + innerMarginMm;
+    const qreal infoWidthMm     = qMax(1.0, resolvedQrXmm - infoXdefaultMm - edgeMarginMm);
+    const qreal defInfoXmm      = infoXdefaultMm;
+    const qreal defInfoYmm      = contentTopMm + partNameHeightMm;
+
+    // Logo: bottom-left, below the info block / website area.
+    const qreal defLogoXmm = contentLeftMm;
+    const qreal defLogoYmm = qMax(contentTopMm, contentBottomMm - logoSizeMm);
+
+    // ── resolve stored vs. default (< 0 means use default) ────────────────
+    const qreal partNameXmm  = (m_printSettings.partNamePosXmm  >= 0.0) ? m_printSettings.partNamePosXmm  : defPartNameXmm;
+    const qreal partNameYmm  = (m_printSettings.partNamePosYmm  >= 0.0) ? m_printSettings.partNamePosYmm  : defPartNameYmm;
+    const qreal qrXmm        = (m_printSettings.qrPosXmm        >= 0.0) ? m_printSettings.qrPosXmm        : defQrXmm;
+    const qreal qrYmm        = (m_printSettings.qrPosYmm        >= 0.0) ? m_printSettings.qrPosYmm        : defQrYmm;
+    const qreal infoXmm      = (m_printSettings.infoBlockPosXmm >= 0.0) ? m_printSettings.infoBlockPosXmm : defInfoXmm;
+    const qreal infoYmm      = (m_printSettings.infoBlockPosYmm >= 0.0) ? m_printSettings.infoBlockPosYmm : defInfoYmm;
+    const qreal logoXmm_raw  = (m_printSettings.logoPosXmm      >= 0.0) ? m_printSettings.logoPosXmm      : defLogoXmm;
+    const qreal logoYmm_raw  = (m_printSettings.logoPosYmm      >= 0.0) ? m_printSettings.logoPosYmm      : defLogoYmm;
+    // clamp logo within content area
+    const qreal logoXmm = qMax(contentLeftMm, qMin(logoXmm_raw, qMax(contentLeftMm, contentRightMm  - logoSizeMm)));
+    const qreal logoYmm = qMax(contentTopMm,  qMin(logoYmm_raw, qMax(contentTopMm,  contentBottomMm - logoSizeMm)));
+
+    // ── fonts ─────────────────────────────────────────────────────────────
     const QString fontFamily = m_printSettings.fontFamily.trimmed().isEmpty()
                                    ? QStringLiteral("Britannic Bold")
                                    : m_printSettings.fontFamily.trimmed();
     QFont partFont(fontFamily);
     partFont.setBold(true);
-    partFont.setPointSizeF(qMax<qreal>(1.0, m_printSettings.partNameFontSizePt * partFontScale * textScale));
+    partFont.setPointSizeF(qMax<qreal>(1.0, m_printSettings.partNameFontSizePt));
     QFont detailFont(fontFamily);
     detailFont.setBold(false);
-    detailFont.setPointSizeF(qMax<qreal>(1.0, m_printSettings.detailFontSizePt * textScale));
+    detailFont.setPointSizeF(qMax<qreal>(1.0, m_printSettings.detailFontSizePt));
 
+    // ── per-page rendering ────────────────────────────────────────────────
     for (int i = 0; i < items.size(); ++i) {
-        if (i > 0) {
-            printer.newPage();
-        }
+        if (i > 0) printer.newPage();
 
-        const PrintItem &item = items.at(i);
-        const QString partLine = QString("Part Name: %1").arg(item.partName.isEmpty() ? "-" : item.partName);
-        const QString skuLine = QString("SKU: %1").arg(item.sku.isEmpty() ? "-" : item.sku);
-        const QString rackLine = QString("Rack Number: %1").arg(item.rackNumber.isEmpty() ? "-" : item.rackNumber);
-        const QString binLine = QString("Bin Number: %1").arg(item.binNumber.isEmpty() ? "-" : item.binNumber);
-        const QString codeLine = item.barcode.isEmpty() ? "-" : item.barcode;
+        const PrintItem &item       = items.at(i);
         const QString barcodePrefix = barcodePrefixFromValue(item.barcode);
-        const QString siteLine = stickerWebsiteForPrefix(barcodePrefix);
-        const int siteLineRows = qMax(1, siteLine.count('\n') + 1);
-        const QImage logoImage = stickerLogoForPrefix(barcodePrefix);
+        const QString siteLine      = stickerWebsiteForPrefix(barcodePrefix);
+        const int     siteLineRows  = qMax(1, siteLine.count('\n') + 1);
+        const QString skuLine       = QString("SKU: %1").arg(item.sku.isEmpty()        ? "-" : item.sku);
+        const QString rackLine      = QString("Rack: %1").arg(item.rackNumber.isEmpty() ? "-" : item.rackNumber);
+        const QString binLine       = QString("Bin: %1").arg(item.binNumber.isEmpty()   ? "-" : item.binNumber);
+        const QString codeLine      = item.barcode.isEmpty() ? "-" : item.barcode;
+        const QImage  logoImage     = stickerLogoForPrefix(barcodePrefix);
 
         painter.setPen(Qt::black);
-        const qreal textXpx = mmToPx(textLeftMm);
-        const qreal textWidthPx = mmToPx(textBlockWidthMm);
 
-        auto drawTextBlock = [&](const QString &text, qreal yMm, qreal hMm, const QFont &baseFont, bool wrap, bool fitToWidth) {
-            QFont useFont = baseFont;
-            if (fitToWidth || wrap) {
-                qreal sizePt = useFont.pointSizeF();
-                if (sizePt <= 0.0) {
-                    sizePt = 10.0;
-                }
-                while (sizePt > 1.0) {
-                    QFontMetricsF fm(useFont);
-                    bool needsShrink = false;
-                    if (fitToWidth && fm.horizontalAdvance(text) > textWidthPx) {
-                        needsShrink = true;
+        // Helper: draw a single text line/block inside an (xMm, yMm, wMm, hMm) rect.
+        auto drawText = [&](const QString &text,
+                            qreal xMm, qreal yMm, qreal wMm, qreal hMm,
+                            const QFont &font, bool wrap, bool shrinkToFit) {
+            const qreal xPx = mmToPx(xMm);
+            const qreal wPx = mmToPx(wMm);
+            const qreal hPx = mmToPx(hMm);
+            QFont use = font;
+            if (shrinkToFit || wrap) {
+                qreal pt = qMax(1.0, use.pointSizeF());
+                while (pt > 1.0) {
+                    QFontMetricsF fm(use);
+                    bool shrink = false;
+                    if (shrinkToFit && fm.horizontalAdvance(text) > wPx) shrink = true;
+                    if (!shrink && wrap) {
+                        if (fm.boundingRect(QRectF(0,0,wPx,hPx), Qt::AlignLeft|Qt::TextWordWrap, text).height() > hPx)
+                            shrink = true;
                     }
-                    if (!needsShrink && wrap) {
-                        const QRectF wrappedRect = fm.boundingRect(QRectF(0, 0, textWidthPx, mmToPx(hMm)),
-                                                                   Qt::AlignLeft | Qt::TextWordWrap,
-                                                                   text);
-                        if (wrappedRect.height() > mmToPx(hMm)) {
-                            needsShrink = true;
-                        }
-                    }
-                    if (!needsShrink) {
-                        break;
-                    }
-                    sizePt -= 0.25;
-                    useFont.setPointSizeF(sizePt);
+                    if (!shrink) break;
+                    pt -= 0.25;
+                    use.setPointSizeF(pt);
                 }
             }
-            painter.setFont(useFont);
-            QFontMetrics fm(useFont);
-            QRectF rect(textXpx, mmToPx(yMm), textWidthPx, mmToPx(hMm));
-            const int flags = wrap ? (Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap)
-                                   : (Qt::AlignLeft | Qt::AlignVCenter);
-            const QString textToDraw = wrap ? text
-                                            : fm.elidedText(text, Qt::ElideRight, static_cast<int>(textWidthPx));
-            painter.drawText(rect, flags, textToDraw);
+            painter.setFont(use);
+            QFontMetrics fm(use);
+            QRectF r(xPx, mmToPx(yMm), wPx, hPx);
+            if (wrap) {
+                painter.drawText(r, Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap, text);
+            } else {
+                painter.drawText(r, Qt::AlignLeft | Qt::AlignVCenter,
+                                 fm.elidedText(text, Qt::ElideRight, qMax(1, (int)wPx)));
+            }
         };
 
-        drawTextBlock(partLine, textTopMm, partNameHeightMm, partFont, true, false);
-        drawTextBlock(skuLine, textTopMm + partNameHeightMm, detailLineHeightMm, detailFont, false, false);
-        drawTextBlock(rackLine, textTopMm + partNameHeightMm + detailLineHeightMm, detailLineHeightMm, detailFont, false, false);
-        drawTextBlock(binLine, textTopMm + partNameHeightMm + detailLineHeightMm * 2, detailLineHeightMm, detailFont, false, false);
-        drawTextBlock(codeLine, textTopMm + partNameHeightMm + detailLineHeightMm * 3, detailLineHeightMm, detailFont, false, true);
-        drawTextBlock(siteLine,
-                      textTopMm + partNameHeightMm + detailLineHeightMm * 4,
-                      detailLineHeightMm * siteLineRows,
-                      detailFont,
-                      siteLineRows > 1,
-                      siteLineRows == 1);
+        // 1. Part Name — full-width header, no left indent.
+        drawText(item.partName.isEmpty() ? "-" : item.partName,
+                 partNameXmm, partNameYmm, contentWidthMm, partNameHeightMm,
+                 partFont, true, false);
 
-        if (!logoImage.isNull() && logoSizeMm > 0.0) {
-            qreal logoXmm = m_printSettings.logoPosXmm;
-            qreal logoYmm = m_printSettings.logoPosYmm;
-            if (logoXmm < 0.0) {
-                logoXmm = contentRightMm - logoSizeMm;
-            }
-            if (logoYmm < 0.0) {
-                logoYmm = contentTopMm;
-            }
-            const qreal minLogoXmm = contentLeftMm;
-            const qreal minLogoYmm = contentTopMm;
-            const qreal maxLogoXmm = qMax(minLogoXmm, contentRightMm - logoSizeMm);
-            const qreal maxLogoYmm = qMax(minLogoYmm, contentBottomMm - logoSizeMm);
-            logoXmm = qMax(minLogoXmm, qMin(logoXmm, maxLogoXmm));
-            logoYmm = qMax(minLogoYmm, qMin(logoYmm, maxLogoYmm));
+        // 2. Info block: SKU, Rack, Bin, Serial, Website — left column below header.
+        drawText(skuLine,   infoXmm, infoYmm,                              infoWidthMm, detailLineHeightMm, detailFont, false, false);
+        drawText(rackLine,  infoXmm, infoYmm + detailLineHeightMm,         infoWidthMm, detailLineHeightMm, detailFont, false, false);
+        drawText(binLine,   infoXmm, infoYmm + detailLineHeightMm * 2,     infoWidthMm, detailLineHeightMm, detailFont, false, false);
+        drawText(codeLine,  infoXmm, infoYmm + detailLineHeightMm * 3,     infoWidthMm, detailLineHeightMm, detailFont, false, true);
+        drawText(siteLine,  infoXmm, infoYmm + detailLineHeightMm * 4,
+                 infoWidthMm, detailLineHeightMm * siteLineRows,
+                 detailFont, siteLineRows > 1, siteLineRows == 1);
 
-            const QRectF logoRect(mmToPx(logoXmm),
-                                  mmToPx(logoYmm),
-                                  mmToPx(logoSizeMm),
-                                  mmToPx(logoSizeMm));
-            QImage logoScaled = logoImage.scaled(logoRect.size().toSize(),
-                                                 Qt::KeepAspectRatio,
-                                                 Qt::SmoothTransformation);
-            const qreal bx = logoRect.left() + (logoRect.width() - logoScaled.width()) / 2.0;
-            const qreal by = logoRect.top() + (logoRect.height() - logoScaled.height()) / 2.0;
-            painter.drawImage(QPointF(bx, by), logoScaled);
+        // 3. QR Code — right column.
+        {
+            const QRectF qrRect(mmToPx(qrXmm), mmToPx(qrYmm), mmToPx(qrWidthMm), mmToPx(qrHeightMm));
+            const QImage qrImage = renderQrCode(item.barcode);
+            if (!qrImage.isNull()) {
+                QImage scaled = qrImage.scaled(qrRect.size().toSize(), Qt::KeepAspectRatio, Qt::FastTransformation);
+                painter.drawImage(QPointF(qrRect.left() + (qrRect.width()  - scaled.width())  / 2.0,
+                                          qrRect.top()  + (qrRect.height() - scaled.height()) / 2.0), scaled);
+            }
         }
 
-        const QRectF qrRect(mmToPx(qrXmm), mmToPx(qrYmm), mmToPx(qrWidthMm), mmToPx(qrHeightMm));
-        const QImage qrImage = renderQrCode(item.barcode);
-        if (!qrImage.isNull()) {
-            QImage scaled = qrImage.scaled(qrRect.size().toSize(), Qt::KeepAspectRatio, Qt::FastTransformation);
-            const qreal bx = qrRect.left() + (qrRect.width() - scaled.width()) / 2.0;
-            const qreal by = qrRect.top() + (qrRect.height() - scaled.height()) / 2.0;
-            painter.drawImage(QPointF(bx, by), scaled);
+        // 4. Logo — bottom-left by default.
+        if (!logoImage.isNull() && logoSizeMm > 0.0) {
+            const QRectF logoRect(mmToPx(logoXmm), mmToPx(logoYmm), mmToPx(logoSizeMm), mmToPx(logoSizeMm));
+            QImage logoScaled = logoImage.scaled(logoRect.size().toSize(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            painter.drawImage(QPointF(logoRect.left() + (logoRect.width()  - logoScaled.width())  / 2.0,
+                                       logoRect.top()  + (logoRect.height() - logoScaled.height()) / 2.0), logoScaled);
         }
     }
 
@@ -7833,30 +7854,18 @@ void MainWindow::printBarcodes() {
         return;
     }
 
-    QStringList toPrint;
-    if (m_barcodeTableView && m_barcodeModel && m_barcodeTableView->selectionModel()) {
-        QModelIndexList selectedRows = m_barcodeTableView->selectionModel()->selectedRows();
-        std::sort(selectedRows.begin(), selectedRows.end(), [](const QModelIndex &left, const QModelIndex &right) {
-            return left.row() < right.row();
-        });
-        for (const QModelIndex &rowIndex : selectedRows) {
-            if (!rowIndex.isValid()) {
-                continue;
-            }
-            QStandardItem *barcodeItem = m_barcodeModel->item(rowIndex.row(), 0);
-            if (barcodeItem) {
-                toPrint.append(barcodeItem->text());
-            }
+    // Export the full batch of last-generated barcodes so that generating N codes
+    // and clicking "Export QR Code" always produces a single PDF with all N labels.
+    QStringList toPrint = m_lastGeneratedBarcodes;
+    if (toPrint.isEmpty()) {
+        const QString current = m_barcodeValueField ? m_barcodeValueField->text().trimmed() : QString();
+        if (!current.isEmpty()) {
+            toPrint << current;
         }
     }
     if (toPrint.isEmpty()) {
-        toPrint = m_lastGeneratedBarcodes;
-        if (toPrint.isEmpty()) {
-            const QString current = m_barcodeValueField ? m_barcodeValueField->text().trimmed() : QString();
-            if (!current.isEmpty()) {
-                toPrint << current;
-            }
-        }
+        setStatus("No QR codes to export. Generate QR codes first.", false);
+        return;
     }
 
     QString selectedSku;

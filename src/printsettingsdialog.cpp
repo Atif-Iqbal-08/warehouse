@@ -5,8 +5,11 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QEvent>
+#include <QFont>
 #include <QFontMetrics>
 #include <QFormLayout>
+#include <QGroupBox>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
@@ -15,66 +18,85 @@
 #include <QSettings>
 #include <QVBoxLayout>
 
+// ── file-local helpers ────────────────────────────────────────────────────────
 namespace {
+
 qreal clampValue(qreal value, qreal minValue, qreal maxValue) {
     return qMax(minValue, qMin(value, maxValue));
 }
 
 QString normalizedPrefix(const QString &value) {
     const QString prefix = value.trimmed().left(2).toUpper();
-    if (prefix == "SD" || prefix == "SK" || prefix == "SM") {
-        return prefix;
-    }
+    if (prefix == "SD" || prefix == "SK" || prefix == "SM") return prefix;
     return "SK";
 }
 
 QString websiteForPrefix(const QString &prefix) {
-    const QString normalized = normalizedPrefix(prefix);
-    if (normalized == "SD") {
-        return "www.skylarkdrones.com";
-    }
-    if (normalized == "SK") {
-        return "www.skykart.in";
-    }
+    const QString n = normalizedPrefix(prefix);
+    if (n == "SD") return "www.skylarkdrones.com";
+    if (n == "SK") return "www.skykart.in";
     return "Skylark Drones Manufacturing\nPrivate Limited";
 }
+
 } // namespace
 
+// ── PrintSettings ─────────────────────────────────────────────────────────────
+
 void PrintSettings::load() {
-    QSettings settings;
-    labelWidthMm = clampValue(settings.value("print/labelWidthMm", kLabelWidthMm).toDouble(), 10.0, 200.0);
-    labelHeightMm = clampValue(settings.value("print/labelHeightMm", kLabelHeightMm).toDouble(), 10.0, 200.0);
-    barcodeWidthMm = clampValue(settings.value("print/barcodeWidthMm", kQrWidthMm).toDouble(), 4.0, 80.0);
-    barcodeHeightMm = clampValue(settings.value("print/barcodeHeightMm", kQrHeightMm).toDouble(), 4.0, 80.0);
-    edgeMarginMm = clampValue(settings.value("print/edgeMarginMm", kEdgeMarginMm).toDouble(), 0.0, 10.0);
-    innerMarginMm = clampValue(settings.value("print/innerMarginMm", kInnerMarginMm).toDouble(), 0.0, 20.0);
-    logoSizeMm = clampValue(settings.value("print/logoSizeMm", kLogoSizeMm).toDouble(), 0.0, 20.0);
-    logoPosXmm = settings.contains("print/logoPosXmm")
-                     ? settings.value("print/logoPosXmm", kAutoLogoPosMm).toDouble()
-                     : kAutoLogoPosMm;
-    logoPosYmm = settings.contains("print/logoPosYmm")
-                     ? settings.value("print/logoPosYmm", kAutoLogoPosMm).toDouble()
-                     : kAutoLogoPosMm;
+    QSettings s;
+    labelWidthMm   = clampValue(s.value("print/labelWidthMm",  kLabelWidthMm).toDouble(),  10.0, 200.0);
+    labelHeightMm  = clampValue(s.value("print/labelHeightMm", kLabelHeightMm).toDouble(), 10.0, 200.0);
+    barcodeWidthMm = clampValue(s.value("print/barcodeWidthMm", kQrWidthMm).toDouble(),    4.0,  80.0);
+    barcodeHeightMm= clampValue(s.value("print/barcodeHeightMm",kQrHeightMm).toDouble(),   4.0,  80.0);
+    edgeMarginMm   = clampValue(s.value("print/edgeMarginMm",  kEdgeMarginMm).toDouble(),  0.0,  10.0);
+    innerMarginMm  = clampValue(s.value("print/innerMarginMm", kInnerMarginMm).toDouble(), 0.0,  20.0);
+    logoSizeMm     = clampValue(s.value("print/logoSizeMm",    kLogoSizeMm).toDouble(),    0.0,  20.0);
+
+    auto loadPos = [&](const QString &key) -> qreal {
+        return s.contains(key) ? s.value(key).toDouble() : kAutoPosMm;
+    };
+    logoPosXmm      = loadPos("print/logoPosXmm");
+    logoPosYmm      = loadPos("print/logoPosYmm");
+    qrPosXmm        = loadPos("print/qrPosXmm");
+    qrPosYmm        = loadPos("print/qrPosYmm");
+    partNamePosXmm  = loadPos("print/partNamePosXmm");
+    partNamePosYmm  = loadPos("print/partNamePosYmm");
+    infoBlockPosXmm = loadPos("print/infoBlockPosXmm");
+    infoBlockPosYmm = loadPos("print/infoBlockPosYmm");
+
     partNameFontSizePt = kPartNameFontSizePt;
-    detailFontSizePt = kDetailFontSizePt;
+    detailFontSizePt   = kDetailFontSizePt;
     fontFamily = QString::fromLatin1(kDefaultFontFamily);
 }
 
 void PrintSettings::save() const {
-    QSettings settings;
-    settings.setValue("print/labelWidthMm", labelWidthMm);
-    settings.setValue("print/labelHeightMm", labelHeightMm);
-    settings.setValue("print/barcodeWidthMm", barcodeWidthMm);
-    settings.setValue("print/barcodeHeightMm", barcodeHeightMm);
-    settings.setValue("print/edgeMarginMm", edgeMarginMm);
-    settings.setValue("print/innerMarginMm", innerMarginMm);
-    settings.setValue("print/logoSizeMm", logoSizeMm);
-    settings.setValue("print/logoPosXmm", logoPosXmm);
-    settings.setValue("print/logoPosYmm", logoPosYmm);
-    settings.remove("print/partNameFontSizePt");
-    settings.remove("print/detailFontSizePt");
-    settings.remove("print/fontFamily");
+    QSettings s;
+    s.setValue("print/labelWidthMm",   labelWidthMm);
+    s.setValue("print/labelHeightMm",  labelHeightMm);
+    s.setValue("print/barcodeWidthMm", barcodeWidthMm);
+    s.setValue("print/barcodeHeightMm",barcodeHeightMm);
+    s.setValue("print/edgeMarginMm",   edgeMarginMm);
+    s.setValue("print/innerMarginMm",  innerMarginMm);
+    s.setValue("print/logoSizeMm",     logoSizeMm);
+
+    auto savePos = [&](const QString &key, qreal val) {
+        if (val >= 0.0) s.setValue(key, val); else s.remove(key);
+    };
+    savePos("print/logoPosXmm",      logoPosXmm);
+    savePos("print/logoPosYmm",      logoPosYmm);
+    savePos("print/qrPosXmm",        qrPosXmm);
+    savePos("print/qrPosYmm",        qrPosYmm);
+    savePos("print/partNamePosXmm",  partNamePosXmm);
+    savePos("print/partNamePosYmm",  partNamePosYmm);
+    savePos("print/infoBlockPosXmm", infoBlockPosXmm);
+    savePos("print/infoBlockPosYmm", infoBlockPosYmm);
+
+    s.remove("print/partNameFontSizePt");
+    s.remove("print/detailFontSizePt");
+    s.remove("print/fontFamily");
 }
+
+// ── PrintSettingsDialog ───────────────────────────────────────────────────────
 
 PrintSettingsDialog::PrintSettingsDialog(const PrintSettings &settings,
                                          const QString &previewPrefix,
@@ -85,138 +107,203 @@ PrintSettingsDialog::PrintSettingsDialog(const PrintSettings &settings,
     , m_settings(settings)
     , m_renderer(std::move(renderer))
     , m_logoResolver(std::move(logoResolver)) {
-    setWindowTitle("QR Code Print Settings");
+    setWindowTitle("Sticker Print Settings");
     setModal(true);
-    setMinimumWidth(560);
+    setMinimumSize(740, 500);
 
-    QVBoxLayout *layout = new QVBoxLayout(this);
-    QFormLayout *form = new QFormLayout();
+    // ── spin-box factory ─────────────────────────────────────────────────
+    auto makeSpinBox = [this](qreal minVal, qreal maxVal, qreal value) -> QDoubleSpinBox * {
+        QDoubleSpinBox *sb = new QDoubleSpinBox(this);
+        sb->setRange(minVal, maxVal);
+        sb->setDecimals(1);
+        sb->setSingleStep(0.5);
+        sb->setSuffix(" mm");
+        sb->setValue(value);
+        return sb;
+    };
+
+    m_labelWidth    = makeSpinBox(10.0, 200.0, m_settings.labelWidthMm);
+    m_labelHeight   = makeSpinBox(10.0, 200.0, m_settings.labelHeightMm);
+    m_barcodeWidth  = makeSpinBox(4.0,  80.0,  m_settings.barcodeWidthMm);
+    m_barcodeHeight = makeSpinBox(4.0,  80.0,  m_settings.barcodeHeightMm);
+    m_edgeMargin    = makeSpinBox(0.0,  10.0,  m_settings.edgeMarginMm);
+    m_innerMargin   = makeSpinBox(0.0,  20.0,  m_settings.innerMarginMm);
+    m_logoSize      = makeSpinBox(0.0,  20.0,  m_settings.logoSizeMm);
 
     m_previewPrefixCombo = new QComboBox(this);
-    m_previewPrefixCombo->addItem("SD - Skylark Drones", "SD");
-    m_previewPrefixCombo->addItem("SK - Skykart", "SK");
-    m_previewPrefixCombo->addItem("SM - SDMPL", "SM");
-    int previewPrefixIndex = m_previewPrefixCombo->findData(normalizedPrefix(previewPrefix));
-    if (previewPrefixIndex < 0) {
-        previewPrefixIndex = m_previewPrefixCombo->findData("SK");
-    }
-    if (previewPrefixIndex >= 0) {
-        m_previewPrefixCombo->setCurrentIndex(previewPrefixIndex);
+    m_previewPrefixCombo->addItem("SD \xe2\x80\x93 Skylark Drones", "SD");
+    m_previewPrefixCombo->addItem("SK \xe2\x80\x93 Skykart",        "SK");
+    m_previewPrefixCombo->addItem("SM \xe2\x80\x93 SDMPL",          "SM");
+    {
+        int idx = m_previewPrefixCombo->findData(normalizedPrefix(previewPrefix));
+        if (idx < 0) idx = m_previewPrefixCombo->findData("SK");
+        if (idx >= 0) m_previewPrefixCombo->setCurrentIndex(idx);
     }
 
-    m_labelWidth = new QDoubleSpinBox(this);
-    m_labelWidth->setRange(10.0, 200.0);
-    m_labelWidth->setDecimals(1);
-    m_labelWidth->setSingleStep(0.5);
-    m_labelWidth->setValue(m_settings.labelWidthMm);
+    // ── left panel: grouped controls ────────────────────────────────────
 
-    m_labelHeight = new QDoubleSpinBox(this);
-    m_labelHeight->setRange(10.0, 200.0);
-    m_labelHeight->setDecimals(1);
-    m_labelHeight->setSingleStep(0.5);
-    m_labelHeight->setValue(m_settings.labelHeightMm);
+    auto addGroup = [this](const QString &title, QFormLayout *&formOut) -> QGroupBox * {
+        QGroupBox *g = new QGroupBox(title, this);
+        formOut = new QFormLayout(g);
+        formOut->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+        return g;
+    };
 
-    m_barcodeWidth = new QDoubleSpinBox(this);
-    m_barcodeWidth->setRange(4.0, 80.0);
-    m_barcodeWidth->setDecimals(1);
-    m_barcodeWidth->setSingleStep(0.5);
-    m_barcodeWidth->setValue(m_settings.barcodeWidthMm);
+    QFormLayout *lf = nullptr;
+    QGroupBox *labelGroup = addGroup("Sticker Size", lf);
+    lf->addRow("Width",  m_labelWidth);
+    lf->addRow("Height", m_labelHeight);
 
-    m_barcodeHeight = new QDoubleSpinBox(this);
-    m_barcodeHeight->setRange(4.0, 80.0);
-    m_barcodeHeight->setDecimals(1);
-    m_barcodeHeight->setSingleStep(0.5);
-    m_barcodeHeight->setValue(m_settings.barcodeHeightMm);
+    QGroupBox *qrGroup = addGroup("QR Code Size", lf);
+    lf->addRow("Width",  m_barcodeWidth);
+    lf->addRow("Height", m_barcodeHeight);
 
-    m_edgeMargin = new QDoubleSpinBox(this);
-    m_edgeMargin->setRange(0.0, 10.0);
-    m_edgeMargin->setDecimals(1);
-    m_edgeMargin->setSingleStep(0.5);
-    m_edgeMargin->setValue(m_settings.edgeMarginMm);
+    QGroupBox *marginsGroup = addGroup("Margins & Spacing", lf);
+    lf->addRow("Outer margin", m_edgeMargin);
+    lf->addRow("Text indent",  m_innerMargin);
 
-    m_innerMargin = new QDoubleSpinBox(this);
-    m_innerMargin->setRange(0.0, 20.0);
-    m_innerMargin->setDecimals(1);
-    m_innerMargin->setSingleStep(0.5);
-    m_innerMargin->setValue(m_settings.innerMarginMm);
+    QGroupBox *logoGroup = addGroup("Logo", lf);
+    lf->addRow("Size", m_logoSize);
+    QLabel *logoHint = new QLabel("Tip: drag the <b>Logo</b> element in the preview "
+                                  "to reposition it.", this);
+    logoHint->setWordWrap(true);
+    logoHint->setStyleSheet("color: #666;");
+    {
+        QVBoxLayout *vl = qobject_cast<QVBoxLayout *>(logoGroup->layout());
+        if (!vl) {
+            vl = new QVBoxLayout();
+            logoGroup->setLayout(vl);
+            vl->addLayout(lf);
+        }
+        vl->addWidget(logoHint);
+    }
 
-    m_logoSize = new QDoubleSpinBox(this);
-    m_logoSize->setRange(0.0, 20.0);
-    m_logoSize->setDecimals(1);
-    m_logoSize->setSingleStep(0.5);
-    m_logoSize->setValue(m_settings.logoSizeMm);
+    QGroupBox *prefixGroup = addGroup("Preview Label Type", lf);
+    lf->addRow("Prefix", m_previewPrefixCombo);
 
-    form->addRow("Preview Prefix", m_previewPrefixCombo);
-    form->addRow("Sticker Width (mm)", m_labelWidth);
-    form->addRow("Sticker Height (mm)", m_labelHeight);
-    form->addRow("QR Code Width (mm)", m_barcodeWidth);
-    form->addRow("QR Code Height (mm)", m_barcodeHeight);
-    form->addRow("Outer Margin (mm)", m_edgeMargin);
-    form->addRow("Text Left Margin (mm)", m_innerMargin);
-    form->addRow("Logo Size (mm)", m_logoSize);
+    QLabel *dragTip = new QLabel(
+        "<b>Drag any coloured element</b> in the preview to reposition it.<br>"
+        "Click <i>Reset Defaults</i> to restore original positions.", this);
+    dragTip->setWordWrap(true);
+    dragTip->setStyleSheet("color: #444; padding: 4px;");
+
+    QVBoxLayout *leftLayout = new QVBoxLayout();
+    leftLayout->setSpacing(8);
+    leftLayout->addWidget(labelGroup);
+    leftLayout->addWidget(qrGroup);
+    leftLayout->addWidget(marginsGroup);
+    leftLayout->addWidget(logoGroup);
+    leftLayout->addWidget(prefixGroup);
+    leftLayout->addWidget(dragTip);
+    leftLayout->addStretch();
+
+    // ── right panel: live preview ────────────────────────────────────────
+    QLabel *previewTitle = new QLabel("Live Preview — drag elements to reposition", this);
+    previewTitle->setAlignment(Qt::AlignCenter);
+    QFont tf = previewTitle->font();
+    tf.setBold(true);
+    previewTitle->setFont(tf);
 
     m_previewLabel = new QLabel(this);
-    m_previewLabel->setFixedSize(420, 250);
+    m_previewLabel->setMinimumSize(340, 400);
     m_previewLabel->setFrameShape(QFrame::StyledPanel);
     m_previewLabel->setAlignment(Qt::AlignCenter);
     m_previewLabel->setMouseTracking(true);
     m_previewLabel->installEventFilter(this);
 
-    QPushButton *resetButton = new QPushButton("Reset Defaults", this);
-    connect(resetButton, &QPushButton::clicked, this, &PrintSettingsDialog::resetDefaults);
+    QVBoxLayout *rightLayout = new QVBoxLayout();
+    rightLayout->addWidget(previewTitle);
+    rightLayout->addWidget(m_previewLabel, 1);
+
+    // ── content row ──────────────────────────────────────────────────────
+    QHBoxLayout *contentLayout = new QHBoxLayout();
+    contentLayout->setSpacing(16);
+    contentLayout->addLayout(leftLayout);
+    contentLayout->addLayout(rightLayout, 1);
+
+    // ── bottom buttons ────────────────────────────────────────────────────
+    QPushButton *resetBtn = new QPushButton("Reset Defaults", this);
+    connect(resetBtn, &QPushButton::clicked, this, &PrintSettingsDialog::resetDefaults);
 
     QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
-    layout->addLayout(form);
-    layout->addWidget(m_previewLabel);
-    layout->addWidget(resetButton);
-    layout->addWidget(buttons);
+    QHBoxLayout *bottomLayout = new QHBoxLayout();
+    bottomLayout->addWidget(resetBtn);
+    bottomLayout->addStretch();
+    bottomLayout->addWidget(buttons);
 
+    // ── main layout ───────────────────────────────────────────────────────
+    QVBoxLayout *mainLayout = new QVBoxLayout(this);
+    mainLayout->setContentsMargins(12, 12, 12, 12);
+    mainLayout->setSpacing(10);
+    mainLayout->addLayout(contentLayout, 1);
+    mainLayout->addLayout(bottomLayout);
+
+    // ── signal wiring ─────────────────────────────────────────────────────
     connect(m_previewPrefixCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, &PrintSettingsDialog::updatePreview);
-    connect(m_labelWidth, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &PrintSettingsDialog::updatePreview);
-    connect(m_labelHeight, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &PrintSettingsDialog::updatePreview);
-    connect(m_barcodeWidth, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &PrintSettingsDialog::updatePreview);
+    connect(m_labelWidth,    qOverload<double>(&QDoubleSpinBox::valueChanged), this, &PrintSettingsDialog::updatePreview);
+    connect(m_labelHeight,   qOverload<double>(&QDoubleSpinBox::valueChanged), this, &PrintSettingsDialog::updatePreview);
+    connect(m_barcodeWidth,  qOverload<double>(&QDoubleSpinBox::valueChanged), this, &PrintSettingsDialog::updatePreview);
     connect(m_barcodeHeight, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &PrintSettingsDialog::updatePreview);
-    connect(m_edgeMargin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &PrintSettingsDialog::updatePreview);
-    connect(m_innerMargin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &PrintSettingsDialog::updatePreview);
-    connect(m_logoSize, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &PrintSettingsDialog::updatePreview);
+    connect(m_edgeMargin,    qOverload<double>(&QDoubleSpinBox::valueChanged), this, &PrintSettingsDialog::updatePreview);
+    connect(m_innerMargin,   qOverload<double>(&QDoubleSpinBox::valueChanged), this, &PrintSettingsDialog::updatePreview);
+    connect(m_logoSize,      qOverload<double>(&QDoubleSpinBox::valueChanged), this, &PrintSettingsDialog::updatePreview);
 
-    m_logoPosXmm = m_settings.logoPosXmm;
-    m_logoPosYmm = m_settings.logoPosYmm;
+    m_logoPosXmm      = m_settings.logoPosXmm;
+    m_logoPosYmm      = m_settings.logoPosYmm;
+    m_qrPosXmm        = m_settings.qrPosXmm;
+    m_qrPosYmm        = m_settings.qrPosYmm;
+    m_partNamePosXmm  = m_settings.partNamePosXmm;
+    m_partNamePosYmm  = m_settings.partNamePosYmm;
+    m_infoBlockPosXmm = m_settings.infoBlockPosXmm;
+    m_infoBlockPosYmm = m_settings.infoBlockPosYmm;
+
     updatePreview();
 }
 
+// ── settings() ───────────────────────────────────────────────────────────────
+
 PrintSettings PrintSettingsDialog::settings() const {
-    PrintSettings settings = m_settings;
-    settings.labelWidthMm = m_labelWidth->value();
-    settings.labelHeightMm = m_labelHeight->value();
-    settings.barcodeWidthMm = m_barcodeWidth->value();
-    settings.barcodeHeightMm = m_barcodeHeight->value();
-    settings.edgeMarginMm = m_edgeMargin->value();
-    settings.innerMarginMm = m_innerMargin->value();
-    settings.logoSizeMm = m_logoSize->value();
-    settings.logoPosXmm = m_logoPosXmm;
-    settings.logoPosYmm = m_logoPosYmm;
-    settings.partNameFontSizePt = PrintSettings::kPartNameFontSizePt;
-    settings.detailFontSizePt = PrintSettings::kDetailFontSizePt;
-    settings.fontFamily = QString::fromLatin1(PrintSettings::kDefaultFontFamily);
-    return settings;
+    PrintSettings s = m_settings;
+    s.labelWidthMm    = m_labelWidth->value();
+    s.labelHeightMm   = m_labelHeight->value();
+    s.barcodeWidthMm  = m_barcodeWidth->value();
+    s.barcodeHeightMm = m_barcodeHeight->value();
+    s.edgeMarginMm    = m_edgeMargin->value();
+    s.innerMarginMm   = m_innerMargin->value();
+    s.logoSizeMm      = m_logoSize->value();
+    s.logoPosXmm      = m_logoPosXmm;
+    s.logoPosYmm      = m_logoPosYmm;
+    s.qrPosXmm        = m_qrPosXmm;
+    s.qrPosYmm        = m_qrPosYmm;
+    s.partNamePosXmm  = m_partNamePosXmm;
+    s.partNamePosYmm  = m_partNamePosYmm;
+    s.infoBlockPosXmm = m_infoBlockPosXmm;
+    s.infoBlockPosYmm = m_infoBlockPosYmm;
+    s.partNameFontSizePt = PrintSettings::kPartNameFontSizePt;
+    s.detailFontSizePt   = PrintSettings::kDetailFontSizePt;
+    s.fontFamily = QString::fromLatin1(PrintSettings::kDefaultFontFamily);
+    return s;
 }
+
+// ── static edit() ─────────────────────────────────────────────────────────────
 
 bool PrintSettingsDialog::edit(QWidget *parent,
                                PrintSettings &settings,
                                const QString &previewPrefix,
                                std::function<QImage(const QString &)> renderer,
                                std::function<QImage(const QString &)> logoResolver) {
-    PrintSettingsDialog dialog(settings, previewPrefix, std::move(renderer), std::move(logoResolver), parent);
-    if (dialog.exec() == QDialog::Accepted) {
-        settings = dialog.settings();
+    PrintSettingsDialog dlg(settings, previewPrefix, std::move(renderer), std::move(logoResolver), parent);
+    if (dlg.exec() == QDialog::Accepted) {
+        settings = dlg.settings();
         return true;
     }
     return false;
 }
+
+// ── resetDefaults() ──────────────────────────────────────────────────────────
 
 void PrintSettingsDialog::resetDefaults() {
     m_labelWidth->setValue(PrintSettings::kLabelWidthMm);
@@ -226,258 +313,313 @@ void PrintSettingsDialog::resetDefaults() {
     m_edgeMargin->setValue(PrintSettings::kEdgeMarginMm);
     m_innerMargin->setValue(PrintSettings::kInnerMarginMm);
     m_logoSize->setValue(PrintSettings::kLogoSizeMm);
-    m_logoPosXmm = PrintSettings::kAutoLogoPosMm;
-    m_logoPosYmm = PrintSettings::kAutoLogoPosMm;
+    m_logoPosXmm      = PrintSettings::kAutoPosMm;
+    m_logoPosYmm      = PrintSettings::kAutoPosMm;
+    m_qrPosXmm        = PrintSettings::kAutoPosMm;
+    m_qrPosYmm        = PrintSettings::kAutoPosMm;
+    m_partNamePosXmm  = PrintSettings::kAutoPosMm;
+    m_partNamePosYmm  = PrintSettings::kAutoPosMm;
+    m_infoBlockPosXmm = PrintSettings::kAutoPosMm;
+    m_infoBlockPosYmm = PrintSettings::kAutoPosMm;
     updatePreview();
 }
 
+// ── hitTest() ─────────────────────────────────────────────────────────────────
+
+PrintSettingsDialog::DragTarget PrintSettingsDialog::hitTest(const QPointF &posPx) const {
+    // Check in reverse paint order so topmost element wins.
+    if (!m_lastLogoRectPx.isEmpty()      && m_lastLogoRectPx.contains(posPx))      return DragTarget::Logo;
+    if (!m_lastQrRectPx.isEmpty()        && m_lastQrRectPx.contains(posPx))        return DragTarget::QrCode;
+    if (!m_lastInfoBlockRectPx.isEmpty() && m_lastInfoBlockRectPx.contains(posPx)) return DragTarget::InfoBlock;
+    if (!m_lastPartNameRectPx.isEmpty()  && m_lastPartNameRectPx.contains(posPx))  return DragTarget::PartName;
+    return DragTarget::None;
+}
+
+// ── eventFilter() ─────────────────────────────────────────────────────────────
+
 bool PrintSettingsDialog::eventFilter(QObject *watched, QEvent *event) {
-    if (watched == m_previewLabel) {
-        if (event->type() == QEvent::MouseButtonPress) {
-            auto *mouseEvent = static_cast<QMouseEvent *>(event);
-            if (mouseEvent->button() == Qt::LeftButton &&
-                !m_lastLogoRectPx.isEmpty() &&
-                m_lastLogoRectPx.contains(mouseEvent->position())) {
-                m_draggingLogo = true;
-                m_logoDragOffsetPx = mouseEvent->position() - m_lastLogoRectPx.topLeft();
+    if (watched != m_previewLabel) {
+        return QDialog::eventFilter(watched, event);
+    }
+
+    if (event->type() == QEvent::MouseButtonPress) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::LeftButton) {
+            const DragTarget target = hitTest(me->position());
+            if (target != DragTarget::None) {
+                m_dragTarget = target;
+                QRectF rect;
+                switch (target) {
+                    case DragTarget::PartName:  rect = m_lastPartNameRectPx;  break;
+                    case DragTarget::InfoBlock: rect = m_lastInfoBlockRectPx; break;
+                    case DragTarget::QrCode:    rect = m_lastQrRectPx;        break;
+                    case DragTarget::Logo:      rect = m_lastLogoRectPx;      break;
+                    default: break;
+                }
+                m_dragOffsetPx = me->position() - rect.topLeft();
                 m_previewLabel->setCursor(Qt::ClosedHandCursor);
                 return true;
             }
-        } else if (event->type() == QEvent::MouseMove) {
-            auto *mouseEvent = static_cast<QMouseEvent *>(event);
-            if (m_draggingLogo && m_lastScalePxPerMm > 0.0 && m_lastLogoSizeMm > 0.0) {
-                const QPointF topLeftPx = mouseEvent->position() - m_logoDragOffsetPx;
-                qreal xMm = (topLeftPx.x() - m_lastLabelRectPx.left()) / m_lastScalePxPerMm;
-                qreal yMm = (topLeftPx.y() - m_lastLabelRectPx.top()) / m_lastScalePxPerMm;
-                const qreal minXmm = m_lastContentLeftMm;
-                const qreal minYmm = m_lastContentTopMm;
-                const qreal maxXmm = qMax(minXmm, m_lastContentRightMm - m_lastLogoSizeMm);
-                const qreal maxYmm = qMax(minYmm, m_lastContentBottomMm - m_lastLogoSizeMm);
-                m_logoPosXmm = clampValue(xMm, minXmm, maxXmm);
-                m_logoPosYmm = clampValue(yMm, minYmm, maxYmm);
-                updatePreview();
-                return true;
-            }
-            if (!m_draggingLogo) {
-                if (!m_lastLogoRectPx.isEmpty() && m_lastLogoRectPx.contains(mouseEvent->position())) {
-                    m_previewLabel->setCursor(Qt::OpenHandCursor);
-                } else {
-                    m_previewLabel->setCursor(Qt::ArrowCursor);
-                }
-            }
-        } else if (event->type() == QEvent::MouseButtonRelease) {
-            auto *mouseEvent = static_cast<QMouseEvent *>(event);
-            if (mouseEvent->button() == Qt::LeftButton && m_draggingLogo) {
-                m_draggingLogo = false;
-                if (!m_lastLogoRectPx.isEmpty() && m_lastLogoRectPx.contains(mouseEvent->position())) {
-                    m_previewLabel->setCursor(Qt::OpenHandCursor);
-                } else {
-                    m_previewLabel->setCursor(Qt::ArrowCursor);
-                }
-                return true;
-            }
-        } else if (event->type() == QEvent::Leave && !m_draggingLogo) {
-            m_previewLabel->setCursor(Qt::ArrowCursor);
         }
+
+    } else if (event->type() == QEvent::MouseMove) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (m_dragTarget != DragTarget::None && m_lastScalePxPerMm > 0.0) {
+            const QPointF topLeftPx = me->position() - m_dragOffsetPx;
+            qreal xMm = (topLeftPx.x() - m_lastLabelRectPx.left()) / m_lastScalePxPerMm;
+            qreal yMm = (topLeftPx.y() - m_lastLabelRectPx.top())  / m_lastScalePxPerMm;
+
+            qreal elemWmm = 0.0, elemHmm = 0.0;
+            switch (m_dragTarget) {
+                case DragTarget::PartName:  elemWmm = m_lastPartNameWidthMm;  elemHmm = m_lastPartNameHeightMm;  break;
+                case DragTarget::InfoBlock: elemWmm = m_lastInfoBlockWidthMm; elemHmm = m_lastInfoBlockHeightMm; break;
+                case DragTarget::QrCode:    elemWmm = m_lastQrWidthMm;        elemHmm = m_lastQrHeightMm;        break;
+                case DragTarget::Logo:      elemWmm = m_lastLogoSizeMm;       elemHmm = m_lastLogoSizeMm;        break;
+                default: break;
+            }
+
+            const qreal maxXmm = qMax(m_lastContentLeftMm, m_lastContentRightMm  - elemWmm);
+            const qreal maxYmm = qMax(m_lastContentTopMm,  m_lastContentBottomMm - elemHmm);
+            xMm = qMax(m_lastContentLeftMm, qMin(xMm, maxXmm));
+            yMm = qMax(m_lastContentTopMm,  qMin(yMm, maxYmm));
+
+            switch (m_dragTarget) {
+                case DragTarget::PartName:  m_partNamePosXmm  = xMm; m_partNamePosYmm  = yMm; break;
+                case DragTarget::InfoBlock: m_infoBlockPosXmm = xMm; m_infoBlockPosYmm = yMm; break;
+                case DragTarget::QrCode:    m_qrPosXmm        = xMm; m_qrPosYmm        = yMm; break;
+                case DragTarget::Logo:      m_logoPosXmm      = xMm; m_logoPosYmm      = yMm; break;
+                default: break;
+            }
+            updatePreview();
+            return true;
+        }
+        // Hover cursor
+        if (m_dragTarget == DragTarget::None) {
+            const DragTarget hover = hitTest(me->position());
+            m_previewLabel->setCursor(hover != DragTarget::None ? Qt::OpenHandCursor : Qt::ArrowCursor);
+        }
+
+    } else if (event->type() == QEvent::MouseButtonRelease) {
+        auto *me = static_cast<QMouseEvent *>(event);
+        if (me->button() == Qt::LeftButton && m_dragTarget != DragTarget::None) {
+            m_dragTarget = DragTarget::None;
+            const DragTarget hover = hitTest(me->position());
+            m_previewLabel->setCursor(hover != DragTarget::None ? Qt::OpenHandCursor : Qt::ArrowCursor);
+            return true;
+        }
+
+    } else if (event->type() == QEvent::Leave && m_dragTarget == DragTarget::None) {
+        m_previewLabel->setCursor(Qt::ArrowCursor);
     }
+
     return QDialog::eventFilter(watched, event);
 }
 
-void PrintSettingsDialog::updatePreview() {
-    if (!m_previewLabel) {
-        return;
-    }
+// ── updatePreview() ───────────────────────────────────────────────────────────
 
-    // Render the preview in screen pixels while keeping every placement decision in
-    // millimeters so the dialog matches the eventual print output.
+void PrintSettingsDialog::updatePreview() {
+    if (!m_previewLabel) return;
+
     const int w = m_previewLabel->width();
     const int h = m_previewLabel->height();
     QImage preview(w, h, QImage::Format_ARGB32_Premultiplied);
-    preview.fill(Qt::white);
+    preview.fill(QColor("#e8e8e8")); // neutral background outside label
 
     QPainter painter(&preview);
     painter.setRenderHint(QPainter::Antialiasing);
 
+    // ── scale label to fit widget ─────────────────────────────────────────
     const qreal labelWmm = m_labelWidth->value();
     const qreal labelHmm = m_labelHeight->value();
-    const qreal marginPx = 10.0;
-    const qreal scale = qMin((w - marginPx * 2.0) / labelWmm, (h - marginPx * 2.0) / labelHmm);
+    const qreal padPx    = 14.0;
+    const qreal scale    = qMin((w - padPx * 2.0) / labelWmm, (h - padPx * 2.0) / labelHmm);
     const qreal labelWpx = labelWmm * scale;
     const qreal labelHpx = labelHmm * scale;
-    auto mmToPx = [&](qreal mm) {
-        return mm * scale;
-    };
+    auto mmToPx = [&](qreal mm) { return mm * scale; };
 
-    QRectF labelRect((w - labelWpx) / 2.0, (h - labelHpx) / 2.0, labelWpx, labelHpx);
-    painter.setPen(QPen(QColor("#666666")));
+    const QRectF labelRect((w - labelWpx) / 2.0, (h - labelHpx) / 2.0, labelWpx, labelHpx);
+    painter.fillRect(labelRect, Qt::white);
+    painter.setPen(QPen(QColor("#888888"), 1));
     painter.drawRect(labelRect);
 
-    const qreal edgeMarginMm = m_edgeMargin->value();
-    const qreal contentLeftMm = qMax<qreal>(0.0, edgeMarginMm);
-    const qreal contentTopMm = qMax<qreal>(0.0, edgeMarginMm);
-    const qreal contentRightMm = qMax(contentLeftMm + 1.0, labelWmm - edgeMarginMm);
-    const qreal contentBottomMm = qMax(contentTopMm + 1.0, labelHmm - edgeMarginMm);
-    const qreal contentHeightMm = qMax(1.0, contentBottomMm - contentTopMm);
+    // ── content / margin geometry ─────────────────────────────────────────
+    const qreal edgeMm  = m_edgeMargin->value();
+    const qreal innerMm = m_innerMargin->value();
+    const qreal cLeftMm   = edgeMm;
+    const qreal cTopMm    = edgeMm;
+    const qreal cRightMm  = qMax(cLeftMm + 1.0, labelWmm - edgeMm);
+    const qreal cBottomMm = qMax(cTopMm  + 1.0, labelHmm - edgeMm);
+    const qreal cWidthMm  = cRightMm - cLeftMm;
 
-    const qreal qrWidthMm = m_barcodeWidth->value();
-    const qreal qrHeightMm = m_barcodeHeight->value();
-    const qreal qrXmm = qMax(contentLeftMm, contentRightMm - qrWidthMm);
-    const qreal qrYmm = qMax(contentTopMm, contentBottomMm - qrHeightMm);
-    const QRectF qrRect(labelRect.left() + mmToPx(qrXmm),
-                        labelRect.top() + mmToPx(qrYmm),
-                        mmToPx(qrWidthMm),
-                        mmToPx(qrHeightMm));
+    // ── font / line-height metrics ────────────────────────────────────────
+    const qreal ptToMm       = 25.4 / 72.0;
+    const qreal partLineHmm  = qMax(1.0, PrintSettings::kPartNameFontSizePt * ptToMm * 1.35);
+    const qreal detailLineHmm= qMax(1.0, PrintSettings::kDetailFontSizePt   * ptToMm * 1.35);
+    const qreal partNameHmm  = partLineHmm  * 2.0;  // 2-line header
+    const qreal infoBlockHmm = detailLineHmm * 5.0; // SKU + Rack + Bin + Serial + Website
 
-    const qreal textLeftMm = qMax(m_innerMargin->value(), contentLeftMm);
-    const qreal interBlockGapMm = edgeMarginMm;
-    const qreal textRightMm = qMax(textLeftMm + 1.0, qrXmm - interBlockGapMm);
-    const qreal textBlockWidthMm = qMax(1.0, textRightMm - textLeftMm);
-    const qreal textTopMm = contentTopMm;
-    const QString selectedPrefix = normalizedPrefix(m_previewPrefixCombo->currentData().toString());
-    const QString codeLine = QString("%1SAMPLE123Q12600001").arg(selectedPrefix);
-    const QString siteLine = websiteForPrefix(selectedPrefix);
-    const int siteLineRows = qMax(1, siteLine.count('\n') + 1);
-    const int partNameLines = 3;
-    const int detailLines = 4 + siteLineRows;
-    const qreal partFontScale = 1.0;
-    const qreal partNameFontSizePt = PrintSettings::kPartNameFontSizePt;
-    const qreal detailFontSizePt = PrintSettings::kDetailFontSizePt;
-    const qreal ptToMm = 25.4 / 72.0;
-    qreal textScale = 1.0;
-    qreal partLineHeightMm = qMax<qreal>(1.0, partNameFontSizePt * partFontScale * ptToMm * 1.35);
-    qreal detailLineHeightMm = qMax<qreal>(1.0, detailFontSizePt * ptToMm * 1.35);
-    qreal partNameHeightMm = partLineHeightMm * partNameLines;
-    qreal detailHeightMm = detailLineHeightMm * detailLines;
-    const qreal totalTextHeightMm = partNameHeightMm + detailHeightMm;
-    if (totalTextHeightMm > contentHeightMm && totalTextHeightMm > 0.0) {
-        textScale = contentHeightMm / totalTextHeightMm;
-        partLineHeightMm *= textScale;
-        detailLineHeightMm *= textScale;
-        partNameHeightMm = partLineHeightMm * partNameLines;
-    }
+    const qreal logoSizeMm  = m_logoSize->value();
+    const qreal qrWmm       = m_barcodeWidth->value();
+    const qreal qrHmm       = m_barcodeHeight->value();
 
-    const QString family = QString::fromLatin1(PrintSettings::kDefaultFontFamily);
-    QFont partFont(family);
-    partFont.setBold(true);
-    partFont.setPointSizeF(qMax<qreal>(1.0, partNameFontSizePt * partFontScale * textScale));
-    QFont detailFont(family);
-    detailFont.setBold(false);
-    detailFont.setPointSizeF(qMax<qreal>(1.0, detailFontSizePt * textScale));
+    // ── default positions ─────────────────────────────────────────────────
+    const qreal defPartNameXmm  = cLeftMm;
+    const qreal defPartNameYmm  = cTopMm;
+    const qreal defQrXmm        = cRightMm - qrWmm;
+    const qreal defQrYmm        = cTopMm + partNameHmm;
+    const qreal resolvedQrXmm   = (m_qrPosXmm >= 0.0) ? m_qrPosXmm : defQrXmm;
+    const qreal infoGapMm       = edgeMm;
+    const qreal defInfoXmm      = cLeftMm + innerMm;
+    const qreal defInfoYmm      = cTopMm + partNameHmm;
+    const qreal infoWidthMm     = qMax(1.0, resolvedQrXmm - defInfoXmm - infoGapMm);
+    const qreal defLogoXmm      = cLeftMm;
+    const qreal defLogoYmm      = cBottomMm - logoSizeMm;
 
-    painter.setPen(Qt::black);
-    const qreal textXpx = labelRect.left() + mmToPx(textLeftMm);
-    const qreal textWidthPx = mmToPx(textBlockWidthMm);
+    // ── resolve stored vs default ─────────────────────────────────────────
+    const qreal partNameXmm  = (m_partNamePosXmm  >= 0.0) ? m_partNamePosXmm  : defPartNameXmm;
+    const qreal partNameYmm  = (m_partNamePosYmm  >= 0.0) ? m_partNamePosYmm  : defPartNameYmm;
+    const qreal qrXmm        = (m_qrPosXmm        >= 0.0) ? m_qrPosXmm        : defQrXmm;
+    const qreal qrYmm        = (m_qrPosYmm        >= 0.0) ? m_qrPosYmm        : defQrYmm;
+    const qreal infoXmm      = (m_infoBlockPosXmm >= 0.0) ? m_infoBlockPosXmm : defInfoXmm;
+    const qreal infoYmm      = (m_infoBlockPosYmm >= 0.0) ? m_infoBlockPosYmm : defInfoYmm;
+    const qreal logoXmm      = (m_logoPosXmm      >= 0.0) ? m_logoPosXmm      : defLogoXmm;
+    const qreal logoYmm      = (m_logoPosYmm      >= 0.0) ? m_logoPosYmm      : defLogoYmm;
 
-    auto drawTextBlock = [&](const QString &text, qreal yMm, qreal hMm, const QFont &baseFont, bool wrap, bool fitToWidth) {
-        QFont useFont(baseFont);
-        if (fitToWidth || wrap) {
-            qreal sizePt = useFont.pointSizeF();
-            if (sizePt <= 0.0) {
-                sizePt = 10.0;
-            }
-            while (sizePt > 1.0) {
-                QFontMetricsF fm(useFont);
-                bool needsShrink = false;
-                if (fitToWidth && fm.horizontalAdvance(text) > textWidthPx) {
-                    needsShrink = true;
-                }
-                if (!needsShrink && wrap) {
-                    const QRectF wrappedRect = fm.boundingRect(QRectF(0, 0, textWidthPx, mmToPx(hMm)),
-                                                               Qt::AlignLeft | Qt::TextWordWrap,
-                                                               text);
-                    if (wrappedRect.height() > mmToPx(hMm)) {
-                        needsShrink = true;
-                    }
-                }
-                if (!needsShrink) {
-                    break;
-                }
-                sizePt -= 0.25;
-                useFont.setPointSizeF(sizePt);
-            }
-        }
-        painter.setFont(useFont);
-        QFontMetrics fm(useFont);
-        const QRectF rect(textXpx, labelRect.top() + mmToPx(yMm), textWidthPx, mmToPx(hMm));
-        const int flags = wrap ? (Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap)
-                               : (Qt::AlignLeft | Qt::AlignVCenter);
-        const QString textToDraw = wrap ? text
-                                        : fm.elidedText(text, Qt::ElideRight, static_cast<int>(textWidthPx));
-        painter.drawText(rect, flags, textToDraw);
+    // ── save layout state for drag ────────────────────────────────────────
+    m_lastScalePxPerMm     = scale;
+    m_lastLabelRectPx      = labelRect;
+    m_lastContentLeftMm    = cLeftMm;
+    m_lastContentTopMm     = cTopMm;
+    m_lastContentRightMm   = cRightMm;
+    m_lastContentBottomMm  = cBottomMm;
+    m_lastPartNameWidthMm  = cWidthMm;
+    m_lastPartNameHeightMm = partNameHmm;
+    m_lastInfoBlockWidthMm = infoWidthMm;
+    m_lastInfoBlockHeightMm= infoBlockHmm;
+    m_lastQrWidthMm        = qrWmm;
+    m_lastQrHeightMm       = qrHmm;
+    m_lastLogoSizeMm       = logoSizeMm;
+
+    // ── pixel rects ───────────────────────────────────────────────────────
+    QRectF partNameRectPx(labelRect.left() + mmToPx(partNameXmm),
+                          labelRect.top()  + mmToPx(partNameYmm),
+                          mmToPx(cWidthMm), mmToPx(partNameHmm));
+    QRectF infoRectPx(labelRect.left() + mmToPx(infoXmm),
+                      labelRect.top()  + mmToPx(infoYmm),
+                      mmToPx(infoWidthMm), mmToPx(infoBlockHmm));
+    QRectF qrRectPx(labelRect.left() + mmToPx(qrXmm),
+                    labelRect.top()  + mmToPx(qrYmm),
+                    mmToPx(qrWmm), mmToPx(qrHmm));
+    QRectF logoRectPx(labelRect.left() + mmToPx(logoXmm),
+                      labelRect.top()  + mmToPx(logoYmm),
+                      mmToPx(logoSizeMm), mmToPx(logoSizeMm));
+
+    m_lastPartNameRectPx  = partNameRectPx;
+    m_lastInfoBlockRectPx = infoRectPx;
+    m_lastQrRectPx        = qrRectPx;
+    m_lastLogoRectPx      = (logoSizeMm > 0.0) ? logoRectPx : QRectF();
+
+    // ── drawing helpers ───────────────────────────────────────────────────
+    auto drawElement = [&](const QRectF &rect, const QColor &fill, const QColor &border, bool dashed) {
+        painter.fillRect(rect, fill);
+        painter.setPen(QPen(border, 1.5, dashed ? Qt::DashLine : Qt::SolidLine));
+        painter.drawRect(rect);
+    };
+    auto drawTag = [&](const QRectF &rect, const QString &label, const QColor &col) {
+        if (rect.width() < 6 || rect.height() < 6) return;
+        QFont f; f.setPixelSize(9); f.setBold(true);
+        painter.setFont(f);
+        painter.setPen(col);
+        painter.drawText(rect.adjusted(2, 1, -2, -1), Qt::AlignTop | Qt::AlignLeft, label);
     };
 
-    drawTextBlock("Part Name: Demo Motor", textTopMm, partNameHeightMm, partFont, true, false);
-    drawTextBlock("SKU: DEMO-1001", textTopMm + partNameHeightMm, detailLineHeightMm, detailFont, false, false);
-    drawTextBlock("Rack Number: R-1", textTopMm + partNameHeightMm + detailLineHeightMm, detailLineHeightMm, detailFont, false, false);
-    drawTextBlock("Bin Number: B-2", textTopMm + partNameHeightMm + detailLineHeightMm * 2, detailLineHeightMm, detailFont, false, false);
-    drawTextBlock(codeLine, textTopMm + partNameHeightMm + detailLineHeightMm * 3, detailLineHeightMm, detailFont, false, true);
-    drawTextBlock(siteLine,
-                  textTopMm + partNameHeightMm + detailLineHeightMm * 4,
-                  detailLineHeightMm * siteLineRows,
-                  detailFont,
-                  siteLineRows > 1,
-                  siteLineRows == 1);
+    const QString selectedPrefix = normalizedPrefix(m_previewPrefixCombo->currentData().toString());
+    const QString codeLine  = QString("%1SAMPLE123Q12600001").arg(selectedPrefix);
+    const QString siteLine  = websiteForPrefix(selectedPrefix);
+    const QString fontFamily = QString::fromLatin1(PrintSettings::kDefaultFontFamily);
 
-    QImage logo;
-    if (m_logoResolver) {
-        logo = m_logoResolver(selectedPrefix);
-    }
-    if (logo.isNull()) {
-        logo.load(":/assets/sticker_logo.png");
-    }
-    const qreal logoSizeMm = m_logoSize->value();
-    m_lastScalePxPerMm = scale;
-    m_lastLabelRectPx = labelRect;
-    m_lastContentLeftMm = contentLeftMm;
-    m_lastContentTopMm = contentTopMm;
-    m_lastContentRightMm = contentRightMm;
-    m_lastContentBottomMm = contentBottomMm;
-    m_lastLogoSizeMm = logoSizeMm;
-    m_lastLogoRectPx = QRectF();
-    if (!logo.isNull() && logoSizeMm > 0.0) {
-        // The preview stores the logo anchor in millimeters so drag-and-drop stays
-        // stable even as the preview widget is resized.
-        const qreal defaultLogoXmm = contentRightMm - logoSizeMm;
-        const qreal defaultLogoYmm = contentTopMm;
-        qreal logoXmm = m_logoPosXmm;
-        qreal logoYmm = m_logoPosYmm;
-        if (logoXmm < 0.0) {
-            logoXmm = defaultLogoXmm;
+    QFont partFont(fontFamily); partFont.setBold(true);
+    partFont.setPointSizeF(qMax(1.0, PrintSettings::kPartNameFontSizePt));
+    QFont detailFont(fontFamily);
+    detailFont.setPointSizeF(qMax(1.0, PrintSettings::kDetailFontSizePt));
+
+    // 1. Part Name — blue, full-width header
+    drawElement(partNameRectPx, QColor(173, 216, 230, 100), QColor(30, 100, 210), false);
+    painter.setPen(Qt::black);
+    painter.setFont(partFont);
+    painter.drawText(partNameRectPx.adjusted(2, 1, -2, -1),
+                     Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap,
+                     "Demo Part Name");
+    drawTag(partNameRectPx, "Part Name", QColor(20, 80, 180));
+
+    // 2. Info block — green dashed (SKU / Rack / Bin / Serial / Website)
+    drawElement(infoRectPx, QColor(144, 238, 144, 90), QColor(30, 150, 60), true);
+    {
+        const QStringList lines = {
+            "SKU: DEMO-1001", "Rack: R-1", "Bin: B-2", codeLine, siteLine
+        };
+        qreal lineY = infoYmm;
+        painter.setFont(detailFont);
+        for (const QString &line : lines) {
+            QRectF lr(labelRect.left() + mmToPx(infoXmm),
+                      labelRect.top()  + mmToPx(lineY),
+                      mmToPx(infoWidthMm), mmToPx(detailLineHmm));
+            painter.setPen(Qt::black);
+            QFontMetrics fm(detailFont);
+            painter.drawText(lr, Qt::AlignLeft | Qt::AlignVCenter,
+                             fm.elidedText(line, Qt::ElideRight, qMax(1, (int)lr.width())));
+            lineY += detailLineHmm;
         }
-        if (logoYmm < 0.0) {
-            logoYmm = defaultLogoYmm;
+    }
+    drawTag(infoRectPx, "Info Block", QColor(20, 120, 40));
+
+    // 3. QR code — orange
+    drawElement(qrRectPx, QColor(255, 220, 150, 100), QColor(200, 120, 0), false);
+    {
+        QImage qr;
+        if (m_renderer) qr = m_renderer(codeLine);
+        if (!qr.isNull()) {
+            QImage scaled = qr.scaled(qrRectPx.size().toSize(), Qt::KeepAspectRatio, Qt::FastTransformation);
+            painter.drawImage(qrRectPx.topLeft() +
+                              QPointF((qrRectPx.width()  - scaled.width())  / 2.0,
+                                      (qrRectPx.height() - scaled.height()) / 2.0), scaled);
         }
-        const qreal minLogoXmm = contentLeftMm;
-        const qreal minLogoYmm = contentTopMm;
-        const qreal maxLogoXmm = qMax(minLogoXmm, contentRightMm - logoSizeMm);
-        const qreal maxLogoYmm = qMax(minLogoYmm, contentBottomMm - logoSizeMm);
-        logoXmm = clampValue(logoXmm, minLogoXmm, maxLogoXmm);
-        logoYmm = clampValue(logoYmm, minLogoYmm, maxLogoYmm);
-        m_logoPosXmm = logoXmm;
-        m_logoPosYmm = logoYmm;
+    }
+    drawTag(qrRectPx, "QR Code", QColor(160, 80, 0));
 
-        const QRectF logoRect(labelRect.left() + mmToPx(logoXmm),
-                              labelRect.top() + mmToPx(logoYmm),
-                              mmToPx(logoSizeMm),
-                              mmToPx(logoSizeMm));
-        m_lastLogoRectPx = logoRect;
-        const QImage logoScaled = logo.scaled(logoRect.size().toSize(),
-                                              Qt::KeepAspectRatio,
-                                              Qt::SmoothTransformation);
-        const qreal bx = logoRect.left() + (logoRect.width() - logoScaled.width()) / 2.0;
-        const qreal by = logoRect.top() + (logoRect.height() - logoScaled.height()) / 2.0;
-        painter.drawImage(QPointF(bx, by), logoScaled);
+    // 4. Logo — purple, bottom-left
+    if (logoSizeMm > 0.0) {
+        drawElement(logoRectPx, QColor(200, 160, 220, 100), QColor(120, 0, 180), true);
+        QImage logo;
+        if (m_logoResolver) logo = m_logoResolver(selectedPrefix);
+        if (logo.isNull()) logo.load(":/assets/sticker_logo.png");
+        if (!logo.isNull()) {
+            QImage scaled = logo.scaled(logoRectPx.size().toSize(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            painter.drawImage(logoRectPx.topLeft() +
+                              QPointF((logoRectPx.width()  - scaled.width())  / 2.0,
+                                      (logoRectPx.height() - scaled.height()) / 2.0), scaled);
+        }
+        drawTag(logoRectPx, "Logo", QColor(100, 0, 160));
     }
 
-    QImage qr;
-    if (m_renderer) {
-        qr = m_renderer(codeLine);
-    }
-    if (!qr.isNull()) {
-        const QImage scaledQr = qr.scaled(qrRect.size().toSize(), Qt::KeepAspectRatio, Qt::FastTransformation);
-        const qreal bx = qrRect.left() + (qrRect.width() - scaledQr.width()) / 2.0;
-        const qreal by = qrRect.top() + (qrRect.height() - scaledQr.height()) / 2.0;
-        painter.drawImage(QPointF(bx, by), scaledQr);
+    // ── legend row at bottom ──────────────────────────────────────────────
+    struct { QColor col; QString label; } legend[] = {
+        {QColor(30,100,210), "Part Name"},
+        {QColor(30,150,60),  "Info Block"},
+        {QColor(200,120,0),  "QR Code"},
+        {QColor(120,0,180),  "Logo"},
+    };
+    const int legendY = h - 14;
+    QFont lf2; lf2.setPixelSize(9);
+    painter.setFont(lf2);
+    qreal legendX = padPx;
+    for (auto &item : legend) {
+        painter.fillRect(QRectF(legendX, legendY + 1, 10, 9), item.col);
+        painter.setPen(item.col.darker(150));
+        painter.drawRect(QRectF(legendX, legendY + 1, 10, 9));
+        painter.setPen(QColor("#333333"));
+        painter.drawText(QRectF(legendX + 12, legendY, 72, 12), Qt::AlignLeft | Qt::AlignVCenter, item.label);
+        legendX += 86;
     }
 
     m_previewLabel->setPixmap(QPixmap::fromImage(preview));
