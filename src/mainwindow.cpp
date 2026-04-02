@@ -224,6 +224,57 @@ QString normalizedText(const QString &text) {
     return text.trimmed();
 }
 
+constexpr int kRuleNameRole = Qt::UserRole + 1;
+
+QString formatRuleDisplayText(const QString &digit, const QString &name) {
+    const QString trimmedDigit = normalizedText(digit);
+    const QString trimmedName = normalizedText(name);
+    if (trimmedDigit.isEmpty()) {
+        return trimmedName;
+    }
+    if (trimmedName.isEmpty()) {
+        return trimmedDigit;
+    }
+    return QString("%1 %2").arg(trimmedDigit, trimmedName);
+}
+
+QString comboRuleName(const QComboBox *combo) {
+    if (!combo) {
+        return QString();
+    }
+    const int index = combo->currentIndex();
+    if (index >= 0) {
+        const QString storedName = combo->itemData(index, kRuleNameRole).toString().trimmed();
+        if (!storedName.isEmpty()) {
+            return storedName;
+        }
+    }
+    return combo->currentText().trimmed();
+}
+
+int findRuleComboIndex(const QComboBox *combo, const QString &ruleName) {
+    if (!combo) {
+        return -1;
+    }
+
+    const QString target = normalizedText(ruleName);
+    if (target.isEmpty()) {
+        return -1;
+    }
+
+    for (int i = 0; i < combo->count(); ++i) {
+        const QString storedName = combo->itemData(i, kRuleNameRole).toString().trimmed();
+        if (!storedName.isEmpty() && QString::compare(storedName, target, Qt::CaseInsensitive) == 0) {
+            return i;
+        }
+        if (QString::compare(combo->itemText(i).trimmed(), target, Qt::CaseInsensitive) == 0) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
 QString formatDimensionValue(double value) {
     QString text = QString::number(value, 'f', 3);
     while (text.contains('.') && (text.endsWith('0') || text.endsWith('.'))) {
@@ -5746,14 +5797,6 @@ bool MainWindow::ensureSchema() {
 }
 
 bool MainWindow::loadRulesIfEmpty() {
-    QSqlQuery check(m_db);
-    if (!check.exec("SELECT COUNT(*) FROM sku_rules")) {
-        return false;
-    }
-    if (check.next() && check.value(0).toInt() > 0) {
-        return true;
-    }
-
     const QString csvPath = findRulesCsvPath();
     if (csvPath.isEmpty()) {
         setStatus("Could not find sku_rules.csv. Place it under Assets/.", false);
@@ -5769,12 +5812,13 @@ bool MainWindow::loadRulesIfEmpty() {
     bool firstLine = true;
     QString lastCategoryDigit;
     QString lastCategoryName;
-
-    m_db.transaction();
-    QSqlQuery insert(m_db);
-    insert.prepare(
-        "INSERT INTO sku_rules (category_digit, category_name, subcategory_digit, subcategory_name) "
-        "VALUES (?, ?, ?, ?)");
+    struct RuleRow {
+        QString categoryDigit;
+        QString categoryName;
+        QString subDigit;
+        QString subName;
+    };
+    QList<RuleRow> rules;
 
     while (!in.atEnd()) {
         const QString line = in.readLine();
@@ -5789,6 +5833,7 @@ bool MainWindow::loadRulesIfEmpty() {
         if (fields.size() < 4) {
             continue;
         }
+
         QString categoryDigit = normalizedText(fields.at(0));
         QString categoryName = normalizedText(fields.at(1));
         if (categoryDigit.isEmpty()) {
@@ -5805,21 +5850,42 @@ bool MainWindow::loadRulesIfEmpty() {
             continue;
         }
 
-        insert.addBindValue(categoryDigit);
-        insert.addBindValue(categoryName);
-        insert.addBindValue(subDigit);
-        insert.addBindValue(subName);
-        if (!insert.exec()) {
-            m_db.rollback();
-            return false;
-        }
-
+        rules.append({categoryDigit, categoryName, subDigit, subName});
         lastCategoryDigit = categoryDigit;
         lastCategoryName = categoryName;
     }
 
-    m_db.commit();
-    return true;
+    if (rules.isEmpty()) {
+        setStatus("sku_rules.csv did not contain any valid rule rows.", false);
+        return false;
+    }
+
+    if (!m_db.transaction()) {
+        return false;
+    }
+    QSqlQuery clear(m_db);
+    if (!clear.exec("DELETE FROM sku_rules")) {
+        m_db.rollback();
+        return false;
+    }
+
+    QSqlQuery insert(m_db);
+    insert.prepare(
+        "INSERT INTO sku_rules (category_digit, category_name, subcategory_digit, subcategory_name) "
+        "VALUES (?, ?, ?, ?)");
+
+    for (const RuleRow &rule : rules) {
+        insert.addBindValue(rule.categoryDigit);
+        insert.addBindValue(rule.categoryName);
+        insert.addBindValue(rule.subDigit);
+        insert.addBindValue(rule.subName);
+        if (!insert.exec()) {
+            m_db.rollback();
+            return false;
+        }
+    }
+
+    return m_db.commit();
 }
 
 QString MainWindow::findRulesCsvPath() const {
@@ -6007,11 +6073,17 @@ void MainWindow::loadCategories() {
     }
     m_categoryCombo->clear();
     QSqlQuery q(m_db);
-    if (!q.exec("SELECT DISTINCT category_digit, category_name FROM sku_rules ORDER BY CAST(category_digit AS INTEGER)")) {
+    if (!q.exec("SELECT category_digit, category_name, MIN(id) AS first_id "
+                "FROM sku_rules "
+                "GROUP BY category_digit, category_name "
+                "ORDER BY first_id")) {
         return;
     }
     while (q.next()) {
-        m_categoryCombo->addItem(q.value(1).toString(), q.value(0).toString());
+        const QString categoryDigit = q.value(0).toString();
+        const QString categoryName = q.value(1).toString();
+        m_categoryCombo->addItem(formatRuleDisplayText(categoryDigit, categoryName), categoryDigit);
+        m_categoryCombo->setItemData(m_categoryCombo->count() - 1, categoryName, kRuleNameRole);
     }
 }
 
@@ -6022,21 +6094,25 @@ void MainWindow::loadSubCategories(const QString &categoryDigit) {
     }
     m_subCategoryCombo->clear();
     QSqlQuery q(m_db);
-    q.prepare("SELECT subcategory_digit, subcategory_name FROM sku_rules WHERE category_digit = ? ORDER BY CAST(subcategory_digit AS INTEGER)");
+    q.prepare("SELECT subcategory_digit, subcategory_name FROM sku_rules "
+              "WHERE category_digit = ? ORDER BY id");
     q.addBindValue(categoryDigit);
     if (!q.exec()) {
         return;
     }
     while (q.next()) {
-        m_subCategoryCombo->addItem(q.value(1).toString(), q.value(0).toString());
+        const QString subCategoryDigit = q.value(0).toString();
+        const QString subCategoryName = q.value(1).toString();
+        m_subCategoryCombo->addItem(formatRuleDisplayText(subCategoryDigit, subCategoryName), subCategoryDigit);
+        m_subCategoryCombo->setItemData(m_subCategoryCombo->count() - 1, subCategoryName, kRuleNameRole);
     }
 }
 
 void MainWindow::updateSerialsAndSku(bool resetVariation) {
     const QString categoryDigit = m_categoryCombo->currentData().toString();
     const QString subCategoryDigit = m_subCategoryCombo->currentData().toString();
-    const QString categoryText = m_categoryCombo->currentText();
-    const QString subCategoryText = m_subCategoryCombo->currentText();
+    const QString categoryText = comboRuleName(m_categoryCombo);
+    const QString subCategoryText = comboRuleName(m_subCategoryCombo);
 
     if (categoryDigit.isEmpty() || subCategoryDigit.isEmpty()) {
         return;
@@ -7060,11 +7136,11 @@ void MainWindow::fillFormFromSearch() {
     m_partNameField->setText(partName);
     m_partNumberField->setText(partNumber);
 
-    const int catIndex = m_categoryCombo->findText(categoryCode);
+    const int catIndex = findRuleComboIndex(m_categoryCombo, categoryCode);
     if (catIndex >= 0) {
         m_categoryCombo->setCurrentIndex(catIndex);
     }
-    const int subIndex = m_subCategoryCombo->findText(subCategory);
+    const int subIndex = findRuleComboIndex(m_subCategoryCombo, subCategory);
     if (subIndex >= 0) {
         m_subCategoryCombo->setCurrentIndex(subIndex);
     }
@@ -7184,8 +7260,8 @@ void MainWindow::saveForm() {
     insert.addBindValue(normalizedText(m_partNumberField->text()));
     insert.addBindValue(sku);
     insert.addBindValue(normalizedText(m_partNameField->text()));
-    insert.addBindValue(m_categoryCombo->currentText());
-    insert.addBindValue(m_subCategoryCombo->currentText());
+    insert.addBindValue(comboRuleName(m_categoryCombo));
+    insert.addBindValue(comboRuleName(m_subCategoryCombo));
     insert.addBindValue(m_itemSerialSpin->value());
     insert.addBindValue(m_variationSpin->value());
     insert.addBindValue(m_descriptionEdit->toPlainText().trimmed());
@@ -7221,8 +7297,8 @@ void MainWindow::saveForm() {
     newValue.insert("sku", sku);
     newValue.insert("part_number", normalizedText(m_partNumberField->text()));
     newValue.insert("part_name", normalizedText(m_partNameField->text()));
-    newValue.insert("category", m_categoryCombo->currentText());
-    newValue.insert("sub_category", m_subCategoryCombo->currentText());
+    newValue.insert("category", comboRuleName(m_categoryCombo));
+    newValue.insert("sub_category", comboRuleName(m_subCategoryCombo));
     newValue.insert("item_serial", m_itemSerialSpin->value());
     newValue.insert("variation", m_variationSpin->value());
     newValue.insert("description", m_descriptionEdit->toPlainText().trimmed());
@@ -8032,8 +8108,8 @@ void MainWindow::updateSelected() {
     update.addBindValue(normalizedText(m_partNumberField->text()));
     update.addBindValue(sku);
     update.addBindValue(normalizedText(m_partNameField->text()));
-    update.addBindValue(m_categoryCombo->currentText());
-    update.addBindValue(m_subCategoryCombo->currentText());
+    update.addBindValue(comboRuleName(m_categoryCombo));
+    update.addBindValue(comboRuleName(m_subCategoryCombo));
     update.addBindValue(m_itemSerialSpin->value());
     update.addBindValue(m_variationSpin->value());
     update.addBindValue(m_descriptionEdit->toPlainText().trimmed());
@@ -8068,8 +8144,8 @@ void MainWindow::updateSelected() {
     newValue.insert("sku", sku);
     newValue.insert("part_number", normalizedText(m_partNumberField->text()));
     newValue.insert("part_name", normalizedText(m_partNameField->text()));
-    newValue.insert("category", m_categoryCombo->currentText());
-    newValue.insert("sub_category", m_subCategoryCombo->currentText());
+    newValue.insert("category", comboRuleName(m_categoryCombo));
+    newValue.insert("sub_category", comboRuleName(m_subCategoryCombo));
     newValue.insert("item_serial", m_itemSerialSpin->value());
     newValue.insert("variation", m_variationSpin->value());
     newValue.insert("description", m_descriptionEdit->toPlainText().trimmed());
@@ -8567,4 +8643,3 @@ QString MainWindow::dbPath() const {
 QString MainWindow::imagesDirPath() const {
     return AppSettings::imagesDirPath();
 }
-

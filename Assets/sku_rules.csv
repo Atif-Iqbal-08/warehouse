@@ -1,82 +1,104 @@
-﻿"Category Digit","Category Name","Sub-category Digit","Sub-category Name"
-"1","1 Mechanical","1","Tubes & Arms"
-"1","1 Mechanical","2","Landing Gear"
-"1","1 Mechanical","3","Covers & Brackets"
-"1","1 Mechanical","4","Heat Sinks & Cooling"
-"1","1 Mechanical","5","Springs & Mechanisms"
-"1","1 Mechanical","6","Tanks & Containers"
-"1","1 Mechanical","7","Gears & Rotation Axes"
-"1","1 Mechanical","8","Fans & Misc. Mechanical"
-"2","2 Pressure & Vacuum","1","Nozzles"
-"2","2 Pressure & Vacuum","2","Pneumatic & Spraying Kits"
-"2","2 Pressure & Vacuum","3","Mini Pumps & Compressors"
-"2","2 Pressure & Vacuum","4","Regulators & Relief Devices"
-"2","2 Pressure & Vacuum","5","Tubing, Hoses & Lines"
-"2","2 Pressure & Vacuum","6","Fittings & Couplings"
-"2","2 Pressure & Vacuum","7","Vacuum End-Effectors & Accessories"
-"2","2 Pressure & Vacuum","8","Accumulators & Dampers"
-"3","3 Electrochemical Devices","1","Batteries"
-"3","3 Electrochemical Devices","2","Battery Cells"
-"3","3 Electrochemical Devices","3","Battery Modules & Sub-packs"
-"4","4 Power Supplies","1","Chargers"
-"4","4 Power Supplies","2","Generators"
-"4","4 Power Supplies","3","Battery Stations"
-"5","5 Flight Controllers & Electronics","1","Flight Controllers"
-"5","5 Flight Controllers & Electronics","2","Electronic Boards"
-"5","5 Flight Controllers & Electronics","3","Communication & Wi-Fi modules"
-"5","5 Flight Controllers & Electronics","4","LEDs & Lights"
-"5","5 Flight Controllers & Electronics","5","Beacon & Auxiliary boards"
-"5","5 Flight Controllers & Electronics","6","ESC & Motor-Drive Boards"
-"5","5 Flight Controllers & Electronics","7","Power Management & Distribution"
-"5","5 Flight Controllers & Electronics","8","Connectors & Wiring Harnesses"
-"5","5 Flight Controllers & Electronics","9","Interface, Adapter & Test PCBs"
-"6","6 Sensors & Radars","1","Rangefinders"
-"6","6 Sensors & Radars","2","Infrared Sensors"
-"6","6 Sensors & Radars","3","Compass Modules"
-"6","6 Sensors & Radars","4","IMU / Gyro-Accel Units"
-"6","6 Sensors & Radars","5","GNSS & RTK Receivers"
-"6","6 Sensors & Radars","6","Optical Flow & Vision Sensors"
-"6","6 Sensors & Radars","7","Baro / Airspeed / Environmental"
-"6","6 Sensors & Radars","8","Baro / Airspeed / Environmental"
-"6","6 Sensors & Radars","9","mmWave / FMCW Radars"
-"7","7 Motors & Propellers","1","Motors"
-"7","7 Motors & Propellers","2","Propellers"
-"7","7 Motors & Propellers","3","Motor Mounts & Adapters"
-"7","7 Motors & Propellers","4","Gearboxes & Drive-Trains"
-"7","7 Motors & Propellers","5","Ducted Fans & EDF Units"
-"7","7 Motors & Propellers","6","Prop Hubs & Quick-Release Systems"
-"7","7 Motors & Propellers","7","Balancing & Vibration Control"
-"7","7 Motors & Propellers","8","Spare Parts & Advanced Propulsion"
-"8","8 Remote Controls","1","RC Transmitters"
-"8","8 Remote Controls","2","Accessories"
-"9","9 Frames & Protective Covers","1","Aircraft Frames"
-"9","9 Frames & Protective Covers","2","Protective Covers & Stickers"
-"9","9 Frames & Protective Covers","3","Dust-proof Mesh"
-"9","9 Frames & Protective Covers","4","Gimbal & Vibration Boards"
-"9","9 Frames & Protective Covers","5","Aircraft Arm Modules"
-"9","9 Frames & Protective Covers","6","Axis Covers"
-"9","9 Frames & Protective Covers","7","Baffles & Internal Frame Parts"
-"0","0 Fasteners & Miscellaneous","1","Screws & Bolts"
-"0","0 Fasteners & Miscellaneous","2","Hex Keys & Tools"
-"0","0 Fasteners & Miscellaneous","3","Lubricants & Consumables"
-"0","0 Fasteners & Miscellaneous","4","Stickers, Labels & Films"
-"0","0 Fasteners & Miscellaneous","5","Nuts, Washers & Locking Hardware"
-"0","0 Fasteners & Miscellaneous","6","Standoffs & Spacers"
-"0","0 Fasteners & Miscellaneous","7","Threaded Inserts & Rivets"
-"0","0 Fasteners & Miscellaneous","8","Pins, Keys & Retaining Clips"
-"0","0 Fasteners & Miscellaneous","9","Cable Management & Protective Sleeving"
-"A","A UAV","1","Agriculture Drones"
-"","A UAV","2","Survey / Mapping Drones"
-"","A UAV","3","Cinematic / Prosumer Drones"
-"","A UAV","4","Mini & Micro Drones"
-"","A UAV","5","FPV & Racing Drones"
-"","A UAV","6","Industrial / Inspection Drones"
-"","A UAV","7","Delivery & Heavy-Lift Drones"
-"","A UAV","8","Fixed-Wing & VTOL Drones"
-"","A UAV","9","Developer Kits & Bare Frames"
-"B","B Kits","1","ARM KIT/ARM ACCESSORIES PACK"
-"","B Kits","2","TANK SCREW PACK"
-"","B Kits","3","DRONE ARM SCREW PACK"
-"","B Kits","4","PROPULSION KITS"
-"","B Kits","5","DRONE FRAME KITS"
-"C","C Robots","1","scara"
+﻿Category Digit,Category Name,Sub-category Digit,Sub-category Name
+1,Mechanical,1,Tubes & Arms
+1,Mechanical,2,Landing Gear
+1,Mechanical,3,Covers & Brackets
+1,Mechanical,4,Heat Sinks & Cooling
+1,Mechanical,5,Springs & Mechanisms
+1,Mechanical,6,Tanks & Containers
+1,Mechanical,7,Gears & Rotation Axes
+1,Mechanical,8,Fans & Misc. Mechanical
+2,Pressure & Vacuum,1,Nozzles
+2,Pressure & Vacuum,2,Pneumatic & Spraying Kits
+2,Pressure & Vacuum,3,Mini Pumps & Compressors
+2,Pressure & Vacuum,4,Regulators & Relief Devices
+2,Pressure & Vacuum,5,Tubing Hoses & Lines
+2,Pressure & Vacuum,6,Fittings & Couplings
+2,Pressure & Vacuum,7,Vacuum End-Effectors & Accessories
+2,Pressure & Vacuum,8,Accumulators & Dampers
+3,Electrochemical Devices,1,Batteries
+3,Electrochemical Devices,2,Battery Cells
+3,Electrochemical Devices,3,Battery Modules & Sub-packs
+4,Power Supplies,1,Chargers
+4,Power Supplies,2,Generators
+4,Power Supplies,3,Battery Stations
+5,Flight Controllers & Electronics,1,Flight Controllers
+5,Flight Controllers & Electronics,2,Electronic Boards
+5,Flight Controllers & Electronics,3,Communication & Wi-Fi Modules
+5,Flight Controllers & Electronics,4,LEDs & Lights
+5,Flight Controllers & Electronics,5,Beacon & Auxiliary Boards
+5,Flight Controllers & Electronics,6,ESC & Motor-Drive Boards
+5,Flight Controllers & Electronics,7,Power Management & Distribution
+5,Flight Controllers & Electronics,8,Connectors & Wiring Harnesses
+5,Flight Controllers & Electronics,9,Interface Adapter & Test PCBs
+6,Sensors & Radars,1,Rangefinders
+6,Sensors & Radars,2,Infrared Sensors
+6,Sensors & Radars,3,Compass Modules
+6,Sensors & Radars,4,IMU / Gyro-Accel Units
+6,Sensors & Radars,5,GNSS & RTK Receivers
+6,Sensors & Radars,6,Optical Flow & Vision Sensors
+6,Sensors & Radars,7,Baro / Airspeed / Environmental
+6,Sensors & Radars,8,Lidar & ToF Sensors
+6,Sensors & Radars,9,mmWave / FMCW Radars
+7,Motors & Propellers,1,Motors
+7,Motors & Propellers,2,Propellers
+7,Motors & Propellers,3,Motor Mounts & Adapters
+7,Motors & Propellers,4,Gearboxes & Drive-Trains
+7,Motors & Propellers,5,Ducted Fans & EDF Units
+7,Motors & Propellers,6,Prop Hubs & Quick-Release Systems
+7,Motors & Propellers,7,Balancing & Vibration Control
+7,Motors & Propellers,8,Spare Parts & Advanced Propulsion
+8,Remote Controls,1,RC Transmitters
+8,Remote Controls,2,Accessories
+9,Frames & Protective Covers,1,Aircraft Frames
+9,Frames & Protective Covers,2,Protective Covers & Stickers
+9,Frames & Protective Covers,3,Dust-proof Mesh
+9,Frames & Protective Covers,4,Gimbal & Vibration Boards
+9,Frames & Protective Covers,5,Aircraft Arm Modules
+9,Frames & Protective Covers,6,Axis Covers
+9,Frames & Protective Covers,7,Baffles & Internal Frame Parts
+0,Fasteners & Miscellaneous,1,Screws & Bolts
+0,Fasteners & Miscellaneous,2,Hex Keys & Tools
+0,Fasteners & Miscellaneous,3,Lubricants & Consumables
+0,Fasteners & Miscellaneous,4,Stickers Labels & Films
+0,Fasteners & Miscellaneous,5,Nuts Washers & Locking Hardware
+0,Fasteners & Miscellaneous,6,Standoffs & Spacers
+0,Fasteners & Miscellaneous,7,Threaded Inserts & Rivets
+0,Fasteners & Miscellaneous,8,Pins Keys & Retaining Clips
+0,Fasteners & Miscellaneous,9,Cable Management & Protective Sleeving
+A,UAV,1,Agriculture Drones
+A,UAV,2,Survey / Mapping Drones
+A,UAV,3,Cinematic / Prosumer Drones
+A,UAV,4,Mini & Micro Drones
+A,UAV,5,FPV & Racing Drones
+A,UAV,6,Industrial / Inspection Drones
+A,UAV,7,Delivery & Heavy-Lift Drones
+A,UAV,8,Fixed-Wing & VTOL Drones
+A,UAV,9,Developer Kits & Bare Frames
+B,Kits,1,Arm Kit / Arm Accessories Pack
+B,Kits,2,Tank Screw Pack
+B,Kits,3,Drone Arm Screw Pack
+B,Kits,4,Propulsion Kits
+B,Kits,5,Drone Frame Kits
+B,Kits,6,Accessories Kits
+C,Robots,1,SCARA Robots
+C,Robots,2,Delta / Parallel Robots
+C,Robots,3,Cartesian / Gantry Robots
+C,Robots,4,Collaborative Robots (Cobots)
+C,Robots,5,Mobile Robots & AGVs
+D,Software,1,Flight Management Software
+D,Software,2,Ground Control Station (GCS)
+D,Software,3,Mission Planning & Automation
+D,Software,4,Fleet Management Platform
+D,Software,5,Data Analytics & AI Tools
+D,Software,6,Simulation & Digital Twin
+D,Software,7,Firmware & Embedded OS
+D,Software,8,SDK / API Licenses
+D,Software,9,Third-party Software Integrations
+E,Services,1,Training & Certification
+E,Services,2,Annual Maintenance Contract (AMC)
+E,Services,3,On-site Support & Deployment
+E,Services,4,Repair & Overhaul
+E,Services,5,Remote Diagnostics & Monitoring
+E,Services,6,Data Processing & Mapping Services
+E,Services,7,Regulatory & Compliance Consulting
+E,Services,8,Custom Engineering Services

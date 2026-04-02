@@ -42,7 +42,7 @@ UninstallDisplayIcon={app}\warehouse_sku_generator.exe
 PrivilegesRequired=admin
 UsePreviousPrivileges=no
 DisableDirPage=no
-UsePreviousAppDir=no
+UsePreviousAppDir=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"
@@ -85,6 +85,35 @@ end;
 function ReadBootstrapValue(const KeyName: string): string;
 begin
   Result := Trim(GetIniString('bootstrap', KeyName, '', BootstrapConfigPath()));
+end;
+
+function DefaultLogConsentValue(): Boolean;
+var
+  ExistingConsent: string;
+begin
+  ExistingConsent := Lowercase(ReadBootstrapValue('log_consent'));
+  if ExistingConsent = '' then
+    Result := True
+  else
+    Result := (ExistingConsent = '1') or (ExistingConsent = 'true') or (ExistingConsent = 'yes');
+end;
+
+function HasExistingBootstrapConfig(): Boolean;
+begin
+  Result := (ReadBootstrapValue('db_path') <> '') and (ReadBootstrapValue('backup_path') <> '');
+end;
+
+function HasExistingInstallAtPath(const Value: string): Boolean;
+var
+  InstallDir: string;
+begin
+  InstallDir := NormalizePathValue(Value);
+  Result := (InstallDir <> '') and FileExists(AddBackslash(InstallDir) + 'warehouse_sku_generator.exe');
+end;
+
+function IsSameLocationUpgrade(): Boolean;
+begin
+  Result := HasExistingBootstrapConfig() and HasExistingInstallAtPath(WizardDirValue());
 end;
 
 function DefaultDbDirValue(): string;
@@ -147,7 +176,15 @@ begin
     False,
     False);
   LogConsentPage.Add('Allow storing logs at: ' + ExpandConstant('{localappdata}\\Warehouse SKU Logs'));
-  LogConsentPage.Values[0] := True;
+  LogConsentPage.Values[0] := DefaultLogConsentValue();
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := False;
+  if IsSameLocationUpgrade() and
+     ((PageID = DbDirPage.ID) or (PageID = BackupDirPage.ID) or (PageID = LogConsentPage.ID)) then
+    Result := True;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;

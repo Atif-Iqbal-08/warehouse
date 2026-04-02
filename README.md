@@ -110,6 +110,7 @@ Installer build script defaults to qmake output (`build-qmake\`).
 
 The installer now writes machine-wide bootstrap defaults to `ProgramData\Warehouse SKU Generator\installer_bootstrap.ini`.
 On first launch after install or reinstall, the app imports those DB/backup defaults into the current user's settings, which keeps admin installs and per-user settings aligned without installer HKCU writes.
+When setup is run against the same install folder on a machine that already has bootstrap DB/backup values, the installer now treats that as an in-place update and preserves those existing paths instead of re-prompting for them.
 
 Requirements:
 - Qt (for `windeployqt.exe`, unless Qt runtime DLLs are already in build output)
