@@ -235,6 +235,7 @@ protected:
 
     void loadCategories();
     void loadSubCategories(const QString &categoryDigit);
+    int firstAvailableItemSerial(const QString &categoryName, const QString &subCategoryName) const;
     void updateSerialsAndSku(bool resetVariation);
     void updateSkuPreview();
     QString currentSkuValue() const;

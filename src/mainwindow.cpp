@@ -4670,19 +4670,15 @@ void MainWindow::exportSkuMasterCsv() {
 
     QTextStream out(&file);
     out.setEncoding(QStringConverter::Utf8);
-    out << "SI No,SKU,Part Number,Part Name,Category,Sub Category,Item Serial,Variation,Description,Storage,Rack Number,Bin Number,Dimensions,Weight Value,Weight Unit,Product Family,Image Path,Comments,Created At\n";
+    out << "SKU,Part Name\n";
 
     QSqlQuery q(m_db);
-    q.prepare(
-        "SELECT si_no, sku, part_number, part_name, category_code, sub_category, item_serial, unique_variation, "
-        "description, storage, rack_number, bin_number, dimensions, weight_value, weight_unit, "
-        "product_family, image_path, comments, created_at "
-        "FROM sku_catalog_active ORDER BY sku");
+    q.prepare("SELECT sku, part_name FROM sku_catalog_active ORDER BY sku");
     if (q.exec()) {
         while (q.next()) {
             QStringList cells;
-            cells.reserve(19);
-            for (int i = 0; i < 19; ++i) {
+            cells.reserve(2);
+            for (int i = 0; i < 2; ++i) {
                 cells << escapeCsvField(q.value(i).toString());
             }
             out << cells.join(',') << '\n';
@@ -6108,6 +6104,36 @@ void MainWindow::loadSubCategories(const QString &categoryDigit) {
     }
 }
 
+int MainWindow::firstAvailableItemSerial(const QString &categoryName, const QString &subCategoryName) const {
+    const QString trimmedCategory = categoryName.trimmed();
+    const QString trimmedSubCategory = subCategoryName.trimmed();
+    if (trimmedCategory.isEmpty() || trimmedSubCategory.isEmpty()) {
+        return 1;
+    }
+
+    QSqlQuery q(m_db);
+    q.prepare("SELECT item_serial FROM sku_catalog_active "
+              "WHERE category_code = ? AND sub_category = ? AND item_serial > 0 "
+              "ORDER BY item_serial ASC");
+    q.addBindValue(trimmedCategory);
+    q.addBindValue(trimmedSubCategory);
+
+    int candidate = 1;
+    if (q.exec()) {
+        while (q.next()) {
+            const int serial = q.value(0).toInt();
+            if (serial < candidate) {
+                continue;
+            }
+            if (serial > candidate) {
+                break;
+            }
+            ++candidate;
+        }
+    }
+    return candidate;
+}
+
 void MainWindow::updateSerialsAndSku(bool resetVariation) {
     const QString categoryDigit = m_categoryCombo->currentData().toString();
     const QString subCategoryDigit = m_subCategoryCombo->currentData().toString();
@@ -6118,18 +6144,7 @@ void MainWindow::updateSerialsAndSku(bool resetVariation) {
         return;
     }
 
-    QSqlQuery q(m_db);
-    q.prepare("SELECT MAX(item_serial) FROM sku_catalog_active WHERE category_code = ? AND sub_category = ?");
-    q.addBindValue(categoryText);
-    q.addBindValue(subCategoryText);
-    int maxSerial = 0;
-    if (q.exec() && q.next()) {
-        if (!q.isNull(0)) {
-            maxSerial = q.value(0).toInt();
-        }
-    }
-
-    const int newSerial = maxSerial + 1;
+    const int newSerial = firstAvailableItemSerial(categoryText, subCategoryText);
 
     m_itemSerialSpin->blockSignals(true);
     m_variationSpin->blockSignals(true);

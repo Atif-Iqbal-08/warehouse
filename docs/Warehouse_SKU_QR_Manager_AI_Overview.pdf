@@ -1,0 +1,561 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 5 /Kids [ 4 0 R 6 0 R 8 0 R 10 0 R 12 0 R ] >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 2573 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+50 792 Td
+() Tj
+T*
+(WAREHOUSE SKU AND QR CODE MANAGER) Tj
+T*
+() Tj
+T*
+(AI Overview and General Workflow) Tj
+T*
+() Tj
+T*
+(Document date: 2026-04-01) Tj
+T*
+(Application root: d:\\Wareehouse Bar Code generator) Tj
+T*
+(Primary implementation files: src/mainwindow.cpp, src/mainwindow_history.cpp,) Tj
+T*
+(src/printsettingsdialog.cpp, src/mainwindow.h) Tj
+T*
+() Tj
+T*
+() Tj
+T*
+(1. What This Software Does) Tj
+T*
+() Tj
+T*
+(This software is a Windows desktop application built with Qt Widgets and C++. It manages) Tj
+T*
+(warehouse SKU master data, generates QR-coded serial labels, tracks historical QR records,) Tj
+T*
+(exports operational reports, and protects sensitive actions with user roles, audit logging,) Tj
+T*
+(and backup workflows.) Tj
+T*
+() Tj
+T*
+(The application is intended for warehouse and inventory teams that need one tool for product) Tj
+T*
+(master data and outgoing or incoming QR label generation. The software is not a web service.) Tj
+T*
+(It is a local desktop app backed by an SQLite database.) Tj
+T*
+() Tj
+T*
+() Tj
+T*
+(2. Core Business Purpose) Tj
+T*
+() Tj
+T*
+(The software solves two connected problems.) Tj
+T*
+() Tj
+T*
+(First, it maintains a structured product catalog where each item gets a computed SKU based) Tj
+T*
+(on category rules.) Tj
+T*
+() Tj
+T*
+(Second, it generates unique QR label values for those SKUs so the warehouse can print) Tj
+T*
+(stickers, track serial creation over time, and review or correct historical serial records) Tj
+T*
+(later.) Tj
+T*
+() Tj
+T*
+() Tj
+T*
+(3. Main Functional Areas) Tj
+T*
+() Tj
+T*
+(Dashboard: shows top-level counts such as total SKUs, total generated serials, current) Tj
+T*
+(quarter volume, prefix counts, and latest SKU cards.) Tj
+T*
+() Tj
+T*
+(SKU Generation: creates and maintains the SKU master catalog. Users can search records, fill) Tj
+T*
+(the form from existing rows, update fields, delete SKUs, and attach product images.) Tj
+T*
+() Tj
+T*
+(QR Code Generation: creates one or more QR serials for a selected SKU, shows the generated) Tj
+T*
+(values in a table, previews a QR image, and exports sticker labels to PDF.) Tj
+T*
+() Tj
+T*
+(QR Code Manager: loads historical QR rows by SKU and serial filter, displays details, allows) Tj
+T*
+(controlled edit and delete actions, and can export selected history rows to sticker PDF.) Tj
+T*
+() Tj
+T*
+(Security and Administration: manages user accounts, roles, permission overrides, login,) Tj
+T*
+(switch-user flow, and audit logging.) Tj
+T*
+() Tj
+T*
+(Database and Backup Operations: loads an existing database, exports a database copy, saves) Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 2564 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+50 792 Td
+(backups, runs automated encrypted backups, and keeps retention history.) Tj
+T*
+() Tj
+T*
+() Tj
+T*
+(4. Main Data Entities) Tj
+T*
+() Tj
+T*
+(sku_rules: the category and sub-category rule table used to build valid SKUs.) Tj
+T*
+() Tj
+T*
+(sku_catalog: the SKU master table that stores item identity and warehouse metadata such as) Tj
+T*
+(part name, part number, dimensions, weight, storage, rack, bin, family, image, and comments.) Tj
+T*
+() Tj
+T*
+(barcode_log: the generated QR history table. Each row stores SKU, year, quarter, serial) Tj
+T*
+(number, barcode value, and timestamps. Deletes are soft deletes.) Tj
+T*
+() Tj
+T*
+(barcode_serials: a tracker table that stores the last used serial for each SKU and period) Tj
+T*
+(combination.) Tj
+T*
+() Tj
+T*
+(app_users and app_roles: authentication and authorization tables for login, role policy, and) Tj
+T*
+(optional per-user permission override.) Tj
+T*
+() Tj
+T*
+(app_audit_log: records sensitive actions, denials, edits, deletes, and other traceable) Tj
+T*
+(events.) Tj
+T*
+() Tj
+T*
+(app_meta and app_backup_history: store application metadata and automated backup history.) Tj
+T*
+() Tj
+T*
+() Tj
+T*
+(5. Startup Workflow) Tj
+T*
+() Tj
+T*
+(1. The application starts in src/main.cpp and opens MainWindow.) Tj
+T*
+(2. MainWindow builds the UI, menu actions, and signal wiring.) Tj
+T*
+(3. The app selects or opens the SQLite database path.) Tj
+T*
+(4. If the database is available, the app ensures schema, default roles, seed data, and) Tj
+T*
+(embedded admin availability.) Tj
+T*
+(5. The app prompts for login.) Tj
+T*
+(6. After successful login, it loads category rules, SKU lists, history filters, dashboard) Tj
+T*
+(metrics, and backup scheduling.) Tj
+T*
+() Tj
+T*
+(If startup database selection is skipped, the window can remain in a no-database state until) Tj
+T*
+(the user loads a database later.) Tj
+T*
+() Tj
+T*
+() Tj
+T*
+(6. SKU Workflow) Tj
+T*
+() Tj
+T*
+(The SKU workflow begins in the SKU Generation tab.) Tj
+T*
+() Tj
+T*
+(Users choose a category and sub-category that come from the seeded SKU rules. They then) Tj
+T*
+(enter item details such as part name, part number, weight, storage information, rack and bin) Tj
+T*
+(location, product family, comments, and optionally an image.) Tj
+T*
+() Tj
+T*
+(The app computes the SKU from business rule components:) Tj
+T*
+(category digit + sub-category digit + item serial padded to 3 digits + variation code) Tj
+T*
+() Tj
+T*
+(Variation codes use digits first and then letters for higher values. The app blocks invalid) Tj
+T*
+(or duplicate SKU creation.) Tj
+ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 2608 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+50 792 Td
+() Tj
+T*
+(The user can save a new SKU record, update an existing one, or soft-delete a selected SKU.) Tj
+T*
+(Deleting a SKU also soft-deletes related barcode records and requires elevated) Tj
+T*
+(authorization.) Tj
+T*
+() Tj
+T*
+() Tj
+T*
+(7. QR Generation Workflow) Tj
+T*
+() Tj
+T*
+(The QR workflow begins after a valid SKU exists in the catalog.) Tj
+T*
+() Tj
+T*
+(The user selects a SKU, chooses a branding prefix, chooses quarter and year, and enters a) Tj
+T*
+(quantity. The supported prefixes in the current code are SD, SK, and SM.) Tj
+T*
+() Tj
+T*
+(For each requested serial, the app computes a QR value using:) Tj
+T*
+(prefix + SKU + quarter + 2-digit year + serial padded to 5 digits) Tj
+T*
+() Tj
+T*
+(The generation flow inserts rows into barcode_log, refreshes the next-serial tracker, shows) Tj
+T*
+(the generated table, and updates dashboard totals. The QR image preview is rendered in-app) Tj
+T*
+(from the generated value.) Tj
+T*
+() Tj
+T*
+(This means the software is both a catalog manager and a serial label generator. The SKU) Tj
+T*
+(defines the product identity. The QR value defines a unique label instance for that SKU in a) Tj
+T*
+(given period.) Tj
+T*
+() Tj
+T*
+() Tj
+T*
+(8. Sticker PDF Workflow) Tj
+T*
+() Tj
+T*
+(After QR rows are generated, the user can export sticker labels to PDF.) Tj
+T*
+() Tj
+T*
+(The print path uses Qt PrintSupport and a configurable sticker layout. The print settings) Tj
+T*
+(dialog controls label size, QR size, margins, logo size, and element placement. The export) Tj
+T*
+(routine combines product details, rack and bin details, branding logo, website text, and QR) Tj
+T*
+(image onto each sticker label.) Tj
+T*
+() Tj
+T*
+(The same PDF export path can also be used from the history screen for selected historical) Tj
+T*
+(serial rows.) Tj
+T*
+() Tj
+T*
+() Tj
+T*
+(9. QR History Workflow) Tj
+T*
+() Tj
+T*
+(The QR Code Manager tab is the operational review screen for generated serials.) Tj
+T*
+() Tj
+T*
+(The user filters by SKU and optionally by serial text, then loads matching rows. The table) Tj
+T*
+(shows SKU, part name, serial, generated timestamp, QR value, quarter, and year.) Tj
+T*
+() Tj
+T*
+(From this screen, authorized users can:) Tj
+T*
+(review details for an existing QR record) Tj
+T*
+(export selected rows to sticker PDF) Tj
+T*
+(edit serial, quarter, year, and date for a selected row) Tj
+T*
+(delete selected rows through soft delete) Tj
+T*
+() Tj
+T*
+(Edit and delete actions require permission checks and admin re-authorization. After a) Tj
+T*
+(change, the app refreshes serial tracking so future generation continues from the correct) Tj
+ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 2079 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+50 792 Td
+(next value.) Tj
+T*
+() Tj
+T*
+() Tj
+T*
+(10. Security Model) Tj
+T*
+() Tj
+T*
+(The application requires login for normal use. Passwords are stored as salted SHA-256) Tj
+T*
+(hashes.) Tj
+T*
+() Tj
+T*
+(Base access levels are View Only, Add Data, and Full Access. The database also supports) Tj
+T*
+(named roles and optional user-specific permission overrides.) Tj
+T*
+() Tj
+T*
+(Important permissions include add, edit, delete SKU, serial edit, serial delete, print,) Tj
+T*
+(export, backup or restore, and manage users.) Tj
+T*
+() Tj
+T*
+(Sensitive actions such as deleting SKUs, deleting serial rows, and editing historical serial) Tj
+T*
+(rows require a second admin authorization step with a reason comment. The software logs) Tj
+T*
+(these actions to the audit table.) Tj
+T*
+() Tj
+T*
+() Tj
+T*
+(11. Export and Backup Workflow) Tj
+T*
+() Tj
+T*
+(The software supports several output flows.) Tj
+T*
+() Tj
+T*
+(CSV export for SKU master data.) Tj
+T*
+() Tj
+T*
+(CSV export for QR summary totals.) Tj
+T*
+() Tj
+T*
+(Spreadsheet export for all generated serials.) Tj
+T*
+() Tj
+T*
+(Database export or save-copy workflows.) Tj
+T*
+() Tj
+T*
+(Automated encrypted backups with retention pruning and backup history tracking.) Tj
+T*
+() Tj
+T*
+(These flows make the application useful not only for daily operations but also for) Tj
+T*
+(reporting, traceability, and recovery.) Tj
+T*
+() Tj
+T*
+() Tj
+T*
+(12. Runtime Files and Inputs) Tj
+T*
+() Tj
+T*
+(Important seeded inputs:) Tj
+T*
+(Assets/sku_rules.csv for category and sub-category rules.) Tj
+T*
+(Assets/dont open/EXISTING sku DATA.csv or related catalog seed paths for first-time catalog) Tj
+T*
+(import when available.) Tj
+T*
+() Tj
+T*
+(Important runtime outputs:) Tj
+T*
+(SQLite database, commonly stored as sku.db.) Tj
+T*
+(Image files under the application data area when needed.) Tj
+T*
+(Monthly runtime logs under the local app data log folder.) Tj
+T*
+(Backup files under the configured backup root.) Tj
+T*
+(PDF, CSV, and spreadsheet exports chosen by the operator.) Tj
+T*
+() Tj
+T*
+() Tj
+T*
+(13. Mental Model For An AI Assistant) Tj
+ET
+endstream
+endobj
+12 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 13 0 R >>
+endobj
+13 0 obj
+<< /Length 1177 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+50 792 Td
+() Tj
+T*
+(An AI assistant should think of this software as a single-user or small-team desktop system) Tj
+T*
+(with four linked concerns:) Tj
+T*
+(product master data) Tj
+T*
+(serial label generation) Tj
+T*
+(security and audit) Tj
+T*
+(backup and export operations) Tj
+T*
+() Tj
+T*
+(The central controller is MainWindow. Most business logic, UI wiring, SQL access, and) Tj
+T*
+(workflow orchestration live there. History-specific behavior is split into) Tj
+T*
+(src/mainwindow_history.cpp. Sticker layout behavior lives in src/printsettingsdialog.cpp.) Tj
+T*
+() Tj
+T*
+(The most important invariant is that SKU master data and QR serial history stay consistent.) Tj
+T*
+(Changes in one area often require refreshes in lists, dashboard metrics, and next-serial) Tj
+T*
+(tracking.) Tj
+T*
+() Tj
+T*
+() Tj
+T*
+(14. Short Summary) Tj
+T*
+() Tj
+T*
+(In plain terms, this software helps a warehouse team create standardized SKUs, generate) Tj
+T*
+(branded QR sticker labels for those SKUs, keep a searchable history of every generated) Tj
+T*
+(serial, export labels and reports, and control sensitive actions through login, permissions,) Tj
+T*
+(audit, and backups.) Tj
+ET
+endstream
+endobj
+xref
+0 14
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000143 00000 n 
+0000000211 00000 n 
+0000000337 00000 n 
+0000002962 00000 n 
+0000003088 00000 n 
+0000005704 00000 n 
+0000005830 00000 n 
+0000008490 00000 n 
+0000008618 00000 n 
+0000010750 00000 n 
+0000010878 00000 n 
+trailer
+<< /Size 14 /Root 1 0 R >>
+startxref
+12108
+%%EOF
