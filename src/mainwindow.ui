@@ -388,7 +388,7 @@
              <item row="7" column="0">
               <widget class="QLabel" name="dimensionsLabel">
                <property name="text">
-                <string>Product Dimensions</string>
+                <string>Product Dimensions (cm x cm x cm)</string>
                </property>
               </widget>
              </item>
@@ -554,6 +554,16 @@
            </item>
            <item row="0" column="1" colspan="2">
             <widget class="QComboBox" name="barcodeSkuComboBox"/>
+           </item>
+           <item row="1" column="0">
+            <widget class="QLabel" name="barcodePrefixLabel">
+             <property name="text">
+              <string>QR Prefix</string>
+             </property>
+            </widget>
+           </item>
+           <item row="1" column="1" colspan="2">
+            <widget class="QComboBox" name="barcodePrefixComboBox"/>
            </item>
            <item row="2" column="0">
             <widget class="QLabel" name="barcodeQuantityLabel">

@@ -1,6 +1,5 @@
 #include "mainwindow.h"
 #include "globals.h"
-#include "app_settings.h"
 
 #include <QComboBox>
 #include <QDateEdit>
@@ -8,42 +7,29 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QItemSelectionModel>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QMenu>
 #include <QModelIndex>
 #include <QSet>
 #include <QSpinBox>
 #include <QSqlQuery>
+#include <QSqlError>
 #include <QStandardItemModel>
 #include <QTableView>
 #include <QSignalBlocker>
 #include <QTime>
-#include <QFile>
-#include <QTextStream>
-#include <QStringConverter>
-
-namespace {
-void appendRunLog(const QString &message) {
-    const QString logPath = QDir(AppSettings::dataDirPath()).filePath("app_run.log");
-    QFile file(logPath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
-        return;
-    }
-    QTextStream out(&file);
-    out.setEncoding(QStringConverter::Utf8);
-    out << QDateTime::currentDateTime().toString(Qt::ISODate) << " | " << message << '\n';
-}
-} // namespace
 #include <QStringList>
 #include <algorithm>
 #include <functional>
 
 void MainWindow::loadHistorySkuList(const QString &filter, bool preserveText) {
     if (!m_historySkuCombo) {
-        appendRunLog("loadHistorySkuList: m_historySkuCombo is null");
+        appendRunLogWithUser("loadHistorySkuList: m_historySkuCombo is null");
         return;
     }
 
@@ -62,10 +48,10 @@ void MainWindow::loadHistorySkuList(const QString &filter, bool preserveText) {
 
     QSqlQuery q(m_db);
     if (trimmed.isEmpty()) {
-        q.prepare("SELECT sku, part_number, part_name FROM sku_catalog ORDER BY sku");
+        q.prepare("SELECT sku, part_number, part_name FROM sku_catalog_active ORDER BY sku");
     } else {
         q.prepare(
-            "SELECT sku, part_number, part_name FROM sku_catalog "
+            "SELECT sku, part_number, part_name FROM sku_catalog_active "
             "WHERE sku LIKE ? OR part_number LIKE ? OR part_name LIKE ? "
             "ORDER BY sku");
         const QString like = "%" + trimmed + "%";
@@ -115,7 +101,7 @@ void MainWindow::loadHistoryForSelectedSku() {
 
 void MainWindow::loadBarcodeHistory(const QString &sku) {
     if (!m_historyModel || !m_historyTableView) {
-        appendRunLog("loadBarcodeHistory: model/view null");
+        appendRunLogWithUser("loadBarcodeHistory: model/view null");
         return;
     }
     QList<QStringList> rows;
@@ -132,8 +118,8 @@ void MainWindow::loadBarcodeHistory(const QString &sku) {
 
     QString sql =
         "SELECT b.sku, s.part_name, b.serial, b.created_at, b.barcode, b.quarter, b.year "
-        "FROM barcode_log b "
-        "LEFT JOIN sku_catalog s ON s.sku = b.sku";
+        "FROM barcode_log_active b "
+        "LEFT JOIN sku_catalog_active s ON s.sku = b.sku";
     if (!clauses.isEmpty()) {
         sql += " WHERE " + clauses.join(" AND ");
     }
@@ -217,7 +203,7 @@ void MainWindow::updateHistorySkuDetails() {
     }
 
     QSqlQuery q(m_db);
-    q.prepare("SELECT part_name, part_number, image_blob, image_path FROM sku_catalog WHERE sku = ?");
+    q.prepare("SELECT part_name, part_number, image_blob, image_path FROM sku_catalog_active WHERE sku = ?");
     q.addBindValue(sku);
     if (q.exec() && q.next()) {
         m_historyPartNameValueLabel->setText(q.value(0).toString());
@@ -268,8 +254,93 @@ void MainWindow::onHistoryTableSelectionChanged(const QModelIndex &current, cons
     updateHistoryBarcodeDetails();
 }
 
+void MainWindow::showHistoryContextMenu(const QPoint &pos) {
+    if (!m_historyTableView || !m_historyModel || !m_historyTableView->selectionModel()) {
+        return;
+    }
+
+    const QModelIndex clickedIndex = m_historyTableView->indexAt(pos);
+    if (!clickedIndex.isValid()) {
+        return;
+    }
+
+    QItemSelectionModel *selectionModel = m_historyTableView->selectionModel();
+    if (!selectionModel->isRowSelected(clickedIndex.row(), QModelIndex())) {
+        m_historyTableView->selectRow(clickedIndex.row());
+    }
+
+    const int selectedCount = selectionModel->selectedRows().size();
+    QMenu menu(this);
+    QAction *exportSelectedAction = menu.addAction(
+        selectedCount > 0
+            ? QString("Export Selected Sticker PDF (%1)").arg(selectedCount)
+            : QString("Export Selected Sticker PDF..."));
+    if (!m_access.canPrint) {
+        exportSelectedAction->setEnabled(false);
+    }
+    const QAction *chosenAction = menu.exec(m_historyTableView->viewport()->mapToGlobal(pos));
+    if (chosenAction == exportSelectedAction) {
+        exportSelectedHistoryBarcodesPdf();
+    }
+}
+
+void MainWindow::exportSelectedHistoryBarcodesPdf() {
+    if (!requireAccess(m_access.canPrint, "You don't have permission to export PDF labels.")) {
+        return;
+    }
+    if (!m_historyTableView || !m_historyModel || !m_historyTableView->selectionModel()) {
+        setStatus("History table is not available.", false);
+        return;
+    }
+
+    QModelIndexList selectedRows = m_historyTableView->selectionModel()->selectedRows();
+    if (selectedRows.isEmpty()) {
+        setStatus("Select serial rows to export stickers.", false);
+        return;
+    }
+
+    std::sort(selectedRows.begin(), selectedRows.end(), [](const QModelIndex &left, const QModelIndex &right) {
+        return left.row() < right.row();
+    });
+
+    QStringList barcodes;
+    barcodes.reserve(selectedRows.size());
+    QSet<QString> seen;
+    for (const QModelIndex &rowIndex : selectedRows) {
+        if (!rowIndex.isValid()) {
+            continue;
+        }
+        QStandardItem *barcodeItem = m_historyModel->item(rowIndex.row(), 4);
+        if (!barcodeItem) {
+            continue;
+        }
+        const QString barcode = barcodeItem->text().trimmed();
+        if (barcode.isEmpty() || seen.contains(barcode)) {
+            continue;
+        }
+        seen.insert(barcode);
+        barcodes.append(barcode);
+    }
+    if (barcodes.isEmpty()) {
+        setStatus("No QR code values found in selected rows.", false);
+        return;
+    }
+
+    QString selectedSku = m_historySkuCombo ? extractSkuFromDisplay(m_historySkuCombo->currentText()) : QString();
+    if (selectedSku.isEmpty() && !selectedRows.isEmpty()) {
+        const QModelIndex firstRow = selectedRows.first();
+        if (firstRow.isValid()) {
+            QStandardItem *skuItem = m_historyModel->item(firstRow.row(), 0);
+            if (skuItem) {
+                selectedSku = skuItem->text().trimmed();
+            }
+        }
+    }
+    exportBarcodesToPdf(barcodes, selectedSku);
+}
+
 void MainWindow::editSelectedHistoryBarcode() {
-    if (!requireAccess(m_access.canEdit, "You don't have permission to edit QR code history.")) {
+    if (!requireAccess(m_access.canSerialEdit, "You don't have permission to edit or reassign serial numbers.")) {
         return;
     }
 
@@ -288,6 +359,7 @@ void MainWindow::editSelectedHistoryBarcode() {
     const QString createdAt = m_historyModel->item(row, 3)->text();
     const int serial = m_historyModel->item(row, 2)->text().toInt();
     const QString oldBarcode = m_historyModel->item(row, 4)->text();
+    const QString barcodePrefix = barcodePrefixFromValue(oldBarcode);
     const QString quarterText = m_historyModel->item(row, 5)->text();
     const int quarter = quarterText.startsWith('Q') ? quarterText.mid(1).toInt() : quarterText.toInt();
     const int year = m_historyModel->item(row, 6)->text().toInt();
@@ -327,7 +399,7 @@ void MainWindow::editSelectedHistoryBarcode() {
     formLayout->addRow("QR Code", barcodeField);
 
     const auto updateBarcodeField = [&]() {
-        const QString value = buildBarcodeValue(sku, serialSpin->value(), yearSpin->value(), quarterSpin->value());
+        const QString value = buildBarcodeValue(sku, serialSpin->value(), yearSpin->value(), quarterSpin->value(), barcodePrefix);
         barcodeField->setText(value);
     };
     updateBarcodeField();
@@ -358,7 +430,7 @@ void MainWindow::editSelectedHistoryBarcode() {
 
     if (newBarcode != oldBarcode) {
         QSqlQuery dup(m_db);
-        dup.prepare("SELECT COUNT(*) FROM barcode_log WHERE sku = ? AND barcode = ?");
+        dup.prepare("SELECT COUNT(*) FROM barcode_log_active WHERE sku = ? AND barcode = ?");
         dup.addBindValue(sku);
         dup.addBindValue(newBarcode);
         if (!dup.exec() || !dup.next()) {
@@ -379,7 +451,7 @@ void MainWindow::editSelectedHistoryBarcode() {
     m_db.transaction();
     QSqlQuery update(m_db);
     update.prepare("UPDATE barcode_log SET serial = ?, quarter = ?, year = ?, barcode = ?, created_at = ? "
-                   "WHERE sku = ? AND barcode = ?");
+                   "WHERE sku = ? AND barcode = ? AND COALESCE(is_deleted, 0) = 0");
     update.addBindValue(newSerial);
     update.addBindValue(newQuarter);
     update.addBindValue(newYear);
@@ -391,6 +463,16 @@ void MainWindow::editSelectedHistoryBarcode() {
     if (!update.exec()) {
         m_db.rollback();
         setStatus("Failed to update QR code.", false);
+        logAction("SERIAL_EDIT",
+                  sku,
+                  oldBarcode,
+                  QString(),
+                  "Failed to update QR code.",
+                  "History",
+                  "EDIT",
+                  false,
+                  update.lastError().text(),
+                  oldBarcode);
         return;
     }
 
@@ -421,7 +503,12 @@ void MainWindow::editSelectedHistoryBarcode() {
               sku,
               QString::fromUtf8(QJsonDocument(oldValue).toJson(QJsonDocument::Compact)),
               QString::fromUtf8(QJsonDocument(newValue).toJson(QJsonDocument::Compact)),
-              comment);
+              comment,
+              "History",
+              "EDIT",
+              true,
+              QString(),
+              oldBarcode);
 
     loadHistoryForSelectedSku();
     if (extractSkuFromDisplay(m_barcodeSkuCombo->currentText()) == sku) {
@@ -431,7 +518,7 @@ void MainWindow::editSelectedHistoryBarcode() {
 }
 
 void MainWindow::deleteSelectedHistoryBarcodes() {
-    if (!requireAccess(m_access.canDelete, "You don't have permission to delete QR code history.")) {
+    if (!requireAccess(m_access.canSerialDelete, "You don't have permission to delete serial numbers.")) {
         return;
     }
 
@@ -463,9 +550,12 @@ void MainWindow::deleteSelectedHistoryBarcodes() {
 
     m_db.transaction();
     QSqlQuery selectMeta(m_db);
-    selectMeta.prepare("SELECT sku, year, quarter, serial, created_at FROM barcode_log WHERE barcode = ?");
+    selectMeta.prepare("SELECT sku, year, quarter, serial, created_at FROM barcode_log_active WHERE barcode = ?");
     QSqlQuery del(m_db);
-    del.prepare("DELETE FROM barcode_log WHERE barcode = ?");
+    del.prepare(
+        "UPDATE barcode_log SET "
+        "is_deleted = 1, deleted_at = ?, deleted_by = ?, delete_reason = ?, deleted_snapshot = ? "
+        "WHERE barcode = ? AND COALESCE(is_deleted, 0) = 0");
 
     for (const QString &barcode : barcodes) {
         selectMeta.addBindValue(barcode);
@@ -485,27 +575,48 @@ void MainWindow::deleteSelectedHistoryBarcodes() {
         }
         selectMeta.finish();
 
+        QJsonObject oldValue;
+        oldValue.insert("sku", sku);
+        oldValue.insert("barcode", barcode);
+        oldValue.insert("serial", serial);
+        oldValue.insert("quarter", quarter);
+        oldValue.insert("year", year);
+        oldValue.insert("created_at", createdAt);
+        const QString oldValueJson = QString::fromUtf8(QJsonDocument(oldValue).toJson(QJsonDocument::Compact));
+
+        del.addBindValue(QDateTime::currentDateTime().toString(Qt::ISODate));
+        del.addBindValue(m_currentUsername);
+        del.addBindValue(comment);
+        del.addBindValue(oldValueJson);
         del.addBindValue(barcode);
         if (!del.exec()) {
             m_db.rollback();
             setStatus("Failed to delete serials.", false);
+            logAction("SERIAL_DELETE",
+                      barcode,
+                      QString(),
+                      QString(),
+                      "Failed to delete serials.",
+                      "History",
+                      "DELETE",
+                      false,
+                      del.lastError().text(),
+                      barcode);
             return;
         }
         del.finish();
 
         if (!sku.isEmpty()) {
-            QJsonObject oldValue;
-            oldValue.insert("sku", sku);
-            oldValue.insert("barcode", barcode);
-            oldValue.insert("serial", serial);
-            oldValue.insert("quarter", quarter);
-            oldValue.insert("year", year);
-            oldValue.insert("created_at", createdAt);
             logAction("SERIAL_DELETE",
                       sku,
-                      QString::fromUtf8(QJsonDocument(oldValue).toJson(QJsonDocument::Compact)),
+                      oldValueJson,
                       QString(),
-                      comment);
+                      comment,
+                      "History",
+                      "DELETE",
+                      true,
+                      QString(),
+                      barcode);
         }
     }
 

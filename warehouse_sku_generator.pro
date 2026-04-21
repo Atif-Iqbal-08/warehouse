@@ -3,6 +3,7 @@ CONFIG += c++17
 
 TEMPLATE = app
 TARGET = warehouse_sku_generator
+win32:RC_ICONS += Assets/app_icon.ico
 
 SOURCES += \
     src/qrcodegen.cpp \
@@ -23,4 +24,6 @@ FORMS += \
 
 RESOURCES += \
     src/assets.qrc
+
+win32:LIBS += -lcrypt32
 

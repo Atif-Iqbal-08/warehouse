@@ -3,6 +3,7 @@
 #include "app_settings.h"
 #include "globals.h"
 #include "qrcodegen.hpp"
+#include <QActionGroup>
 #include <QAbstractItemView>
 #include <QAbstractButton>
 #include <QComboBox>
@@ -34,16 +35,18 @@
 #include <QIntValidator>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QMainWindow>
 #include <QMenu>
 #include <QMenuBar>
 #include <QAction>
-#include <QActionGroup>
+#include <QCheckBox>
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPixmap>
 #include <QPushButton>
 #include <QMessageBox>
+#include <QTextBrowser>
 #include <QTabWidget>
 #include <QTime>
 #include <QPrintDialog>
@@ -52,6 +55,8 @@
 #include <QPageSize>
 #include <QRandomGenerator>
 #include <QRegularExpression>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QColor>
 #include <QPen>
 #include <QSet>
@@ -64,22 +69,124 @@
 #include <QStandardItem>
 #include <QStandardItemModel>
 #include <QStandardPaths>
+#include <QSysInfo>
 #include <QTableView>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTextStream>
+#include <QTemporaryFile>
 #include <QUuid>
 #include <QApplication>
 #include <QGridLayout>
 #include <QGraphicsDropShadowEffect>
+#include <QGraphicsPixmapItem>
+#include <QGraphicsScene>
+#include <QGraphicsView>
 #include <QScrollArea>
+#include <QScreen>
 #include <QVBoxLayout>
 #include <QTimer>
 #include <QMouseEvent>
+#include <QPalette>
+#include <QResizeEvent>
+#include <QWheelEvent>
 #include <QSettings>
+#include <QSharedPointer>
+#include <QStatusBar>
+#include <QStyleHints>
 #include <exception>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <shellapi.h>
+#include <wincrypt.h>
+#endif
+
 namespace {
+// Image-heavy detail dialogs reuse this view so users can zoom and pan
+// product photos without losing the default fit-to-window behavior.
+class ZoomableImageView final : public QGraphicsView {
+public:
+    explicit ZoomableImageView(QWidget *parent = nullptr)
+        : QGraphicsView(parent)
+        , m_scene(new QGraphicsScene(this)) {
+        setScene(m_scene);
+        setDragMode(QGraphicsView::ScrollHandDrag);
+        setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
+        setResizeAnchor(QGraphicsView::AnchorViewCenter);
+        setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform | QPainter::TextAntialiasing);
+    }
+
+    void setImage(const QPixmap &pixmap) {
+        m_scene->clear();
+        m_pixmapItem = nullptr;
+        m_zoomFactor = 1.0;
+        m_userZoomed = false;
+
+        if (pixmap.isNull()) {
+            return;
+        }
+
+        m_pixmapItem = m_scene->addPixmap(pixmap);
+        m_scene->setSceneRect(m_pixmapItem->boundingRect());
+        fitCurrentImage();
+    }
+
+protected:
+    void wheelEvent(QWheelEvent *event) override {
+        if (!m_pixmapItem) {
+            QGraphicsView::wheelEvent(event);
+            return;
+        }
+
+        const int deltaY = event->angleDelta().y();
+        if (deltaY == 0) {
+            QGraphicsView::wheelEvent(event);
+            return;
+        }
+
+        const qreal step = (deltaY > 0) ? 1.15 : (1.0 / 1.15);
+        const qreal nextZoom = m_zoomFactor * step;
+        if (nextZoom < 0.05 || nextZoom > 32.0) {
+            event->accept();
+            return;
+        }
+
+        scale(step, step);
+        m_zoomFactor = nextZoom;
+        m_userZoomed = true;
+        event->accept();
+    }
+
+    void resizeEvent(QResizeEvent *event) override {
+        QGraphicsView::resizeEvent(event);
+        if (m_pixmapItem && !m_userZoomed) {
+            fitCurrentImage();
+        }
+    }
+
+private:
+    void fitCurrentImage() {
+        if (!m_pixmapItem) {
+            return;
+        }
+        fitInView(m_pixmapItem->boundingRect(), Qt::KeepAspectRatio);
+        m_zoomFactor = transform().m11();
+        if (m_zoomFactor <= 0.0) {
+            m_zoomFactor = 1.0;
+        }
+    }
+
+    QGraphicsScene *m_scene = nullptr;
+    QGraphicsPixmapItem *m_pixmapItem = nullptr;
+    qreal m_zoomFactor = 1.0;
+    bool m_userZoomed = false;
+};
+
+// The bundled seed files are simple CSV exports, so a focused local parser keeps
+// the import path easy to inspect and avoids pulling in a heavier dependency.
 QStringList parseCsvLine(const QString &line) {
     QStringList fields;
     QString field;
@@ -117,6 +224,110 @@ QString normalizedText(const QString &text) {
     return text.trimmed();
 }
 
+constexpr int kRuleNameRole = Qt::UserRole + 1;
+
+QString formatRuleDisplayText(const QString &digit, const QString &name) {
+    const QString trimmedDigit = normalizedText(digit);
+    const QString trimmedName = normalizedText(name);
+    if (trimmedDigit.isEmpty()) {
+        return trimmedName;
+    }
+    if (trimmedName.isEmpty()) {
+        return trimmedDigit;
+    }
+    return QString("%1 %2").arg(trimmedDigit, trimmedName);
+}
+
+QString comboRuleName(const QComboBox *combo) {
+    if (!combo) {
+        return QString();
+    }
+    const int index = combo->currentIndex();
+    if (index >= 0) {
+        const QString storedName = combo->itemData(index, kRuleNameRole).toString().trimmed();
+        if (!storedName.isEmpty()) {
+            return storedName;
+        }
+    }
+    return combo->currentText().trimmed();
+}
+
+int findRuleComboIndex(const QComboBox *combo, const QString &ruleName) {
+    if (!combo) {
+        return -1;
+    }
+
+    const QString target = normalizedText(ruleName);
+    if (target.isEmpty()) {
+        return -1;
+    }
+
+    for (int i = 0; i < combo->count(); ++i) {
+        const QString storedName = combo->itemData(i, kRuleNameRole).toString().trimmed();
+        if (!storedName.isEmpty() && QString::compare(storedName, target, Qt::CaseInsensitive) == 0) {
+            return i;
+        }
+        if (QString::compare(combo->itemText(i).trimmed(), target, Qt::CaseInsensitive) == 0) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+QString formatDimensionValue(double value) {
+    QString text = QString::number(value, 'f', 3);
+    while (text.contains('.') && (text.endsWith('0') || text.endsWith('.'))) {
+        text.chop(1);
+    }
+    return text;
+}
+
+bool tryNormalizeDimensionsCm(const QString &input, QString *normalizedOut) {
+    const QString trimmed = input.trimmed();
+    if (trimmed.isEmpty()) {
+        if (normalizedOut) {
+            *normalizedOut = QString();
+        }
+        return true;
+    }
+
+    static const QRegularExpression pattern(
+        QStringLiteral(R"(^\s*(\d+(?:\.\d+)?)\s*(?:cm)?\s*[xX×]\s*(\d+(?:\.\d+)?)\s*(?:cm)?\s*[xX×]\s*(\d+(?:\.\d+)?)\s*(?:cm)?\s*$)"),
+        QRegularExpression::CaseInsensitiveOption);
+
+    const QRegularExpressionMatch match = pattern.match(trimmed);
+    if (!match.hasMatch()) {
+        return false;
+    }
+
+    bool ok1 = false;
+    bool ok2 = false;
+    bool ok3 = false;
+    const double length = match.captured(1).toDouble(&ok1);
+    const double width = match.captured(2).toDouble(&ok2);
+    const double height = match.captured(3).toDouble(&ok3);
+    if (!ok1 || !ok2 || !ok3 || length <= 0.0 || width <= 0.0 || height <= 0.0) {
+        return false;
+    }
+
+    if (normalizedOut) {
+        *normalizedOut = QString("%1 cm x %2 cm x %3 cm")
+                             .arg(formatDimensionValue(length),
+                                  formatDimensionValue(width),
+                                  formatDimensionValue(height));
+    }
+    return true;
+}
+
+QString normalizeBarcodePrefix(const QString &prefix) {
+    const QString normalized = prefix.trimmed().left(2).toUpper();
+    if (normalized == "SD" || normalized == "SK" || normalized == "SM") {
+        return normalized;
+    }
+    return "SK";
+}
+
 QString escapeCsvField(const QString &value) {
     QString field = value;
     const bool needsQuotes = field.contains('"') || field.contains(',') || field.contains('\n') || field.contains('\r');
@@ -127,42 +338,296 @@ QString escapeCsvField(const QString &value) {
     return field;
 }
 
+QString loadDocumentationMarkdown(const QString &fileName) {
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QStringList candidates = {
+        QDir(appDir).filePath("docs/" + fileName),
+        QDir(appDir).filePath("../docs/" + fileName),
+        QDir(appDir).filePath("../../docs/" + fileName),
+        QDir::current().filePath("docs/" + fileName)
+    };
+
+    for (const QString &path : candidates) {
+        QFile file(path);
+        if (!file.exists()) {
+            continue;
+        }
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            continue;
+        }
+        QTextStream in(&file);
+        in.setEncoding(QStringConverter::Utf8);
+        return in.readAll();
+    }
+
+    QString message = QString("Documentation file not found: %1\n\nSearched in:\n").arg(fileName);
+    for (const QString &path : candidates) {
+        message += " - " + QDir::toNativeSeparators(path) + '\n';
+    }
+    return message;
+}
+
+QString commandLineValue(const QStringList &args, const QString &name) {
+    for (int i = 1; i < args.size(); ++i) {
+        const QString arg = args.at(i);
+        if (arg == name && i + 1 < args.size()) {
+            return args.at(i + 1).trimmed();
+        }
+        const QString prefix = name + "=";
+        if (arg.startsWith(prefix, Qt::CaseInsensitive)) {
+            return arg.mid(prefix.size()).trimmed();
+        }
+    }
+    return QString();
+}
+
+bool hasCommandLineFlag(const QStringList &args, const QString &name) {
+    for (int i = 1; i < args.size(); ++i) {
+        if (args.at(i).compare(name, Qt::CaseInsensitive) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+QString themePreferenceKey() {
+    return QStringLiteral("ui/theme");
+}
+
+bool systemPrefersDarkTheme() {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    return qApp && qApp->styleHints() && qApp->styleHints()->colorScheme() == Qt::ColorScheme::Dark;
+#else
+    return qApp && qApp->palette().color(QPalette::Window).lightness() < 128;
+#endif
+}
+
+QString tableSelectionStyleSheet(bool darkTheme) {
+    return darkTheme
+               ? QStringLiteral(R"(
+QTableView {
+    selection-background-color: #ff7c38;
+    selection-color: #111118;
+}
+QTableView::item:selected {
+    background: #ff7c38;
+    color: #111118;
+}
+QTableView::item:selected:!active {
+    background: #c85a1a;
+    color: #e8e8f0;
+}
+)")
+               : QStringLiteral(R"(
+QTableView {
+    selection-background-color: #dd6000;
+    selection-color: #ffffff;
+}
+QTableView::item:selected {
+    background: #dd6000;
+    color: #ffffff;
+}
+QTableView::item:selected:!active {
+    background: #f07820;
+    color: #ffffff;
+}
+)");
+}
+
+QString highlightedSkuFieldStyle(bool darkTheme) {
+    return darkTheme
+               ? QStringLiteral("QLineEdit { font-size: 15px; font-weight: 700; color: #ff7c38; border: 1px solid #2e2e42; background-color: #1e1e2b; border-radius: 7px; padding: 5px 10px; }")
+               : QStringLiteral("QLineEdit { font-size: 15px; font-weight: 700; color: #c85000; border: 1px solid #d0d0e0; background-color: #ffffff; border-radius: 7px; padding: 5px 10px; }");
+}
+
+QString versionLabelStyle(bool darkTheme) {
+    return darkTheme
+               ? QStringLiteral("QLabel { color: #58587a; padding-right: 6px; font-weight: 500; font-size: 9pt; }")
+               : QStringLiteral("QLabel { color: #9898b8; padding-right: 6px; font-weight: 500; font-size: 9pt; }");
+}
+
+QString g_runLogUsername = QStringLiteral("anonymous");
+QString g_runLogUserId = QStringLiteral("-");
+QString g_runLogRole = QStringLiteral("unknown");
+
+const QString kEmbeddedDeveloperUsername = QStringLiteral("Admin");
+const QString kEmbeddedDeveloperPassword = QStringLiteral("Skylark@321");
+const QString kEmbeddedDeveloperRole = QStringLiteral("master_admin");
+const QString kEmbeddedDeveloperUserId = QStringLiteral("DEV-ADMIN");
+const QString kEmbeddedDeveloperFullName = QStringLiteral("Admin");
+const QString kEmbeddedDeveloperEmail = QStringLiteral("admin@localhost");
+
+QString normalizedLogIdentity(const QString &value, const QString &fallback) {
+    const QString trimmed = value.trimmed();
+    return trimmed.isEmpty() ? fallback : trimmed;
+}
+
+void setRunLogIdentity(const QString &username, const QString &userId, const QString &role) {
+    g_runLogUsername = normalizedLogIdentity(username, QStringLiteral("anonymous"));
+    g_runLogUserId = normalizedLogIdentity(userId, QStringLiteral("-"));
+    g_runLogRole = normalizedLogIdentity(role, QStringLiteral("unknown"));
+}
+
+QString runLogIdentityPrefix() {
+    return QStringLiteral("user=%1 user_id=%2 role=%3")
+        .arg(g_runLogUsername, g_runLogUserId, g_runLogRole);
+}
+
+QString quoteWindowsArgument(const QString &arg) {
+    QString escaped = arg;
+    escaped.replace('"', "\\\"");
+    return "\"" + escaped + "\"";
+}
+
+QString configuredRunLogPath() {
+    QString localAppData = QProcessEnvironment::systemEnvironment().value("LOCALAPPDATA").trimmed();
+    if (localAppData.isEmpty()) {
+        localAppData = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation).trimmed();
+    }
+    if (localAppData.isEmpty()) {
+        localAppData = AppSettings::dataRootPath();
+    }
+
+    const QString logFolder = QDir(localAppData).filePath("Warehouse SKU Logs");
+
+    QDir dir(logFolder);
+    if (!dir.exists()) {
+        dir.mkpath(".");
+    }
+    const QString monthlyFile = QStringLiteral("app_run_%1.log")
+                                    .arg(QDate::currentDate().toString("yyyy-MM"));
+    return dir.filePath(monthlyFile);
+}
+
+void appendRunLog(const QString &message);
+
+QString installerBootstrapPath() {
+    QString programData = QProcessEnvironment::systemEnvironment().value("PROGRAMDATA").trimmed();
+    if (programData.isEmpty()) {
+        programData = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation).trimmed();
+    }
+    if (programData.isEmpty()) {
+        return QString();
+    }
+    return QDir(QDir(programData).filePath(AppGlobals::appName())).filePath(AppGlobals::installerBootstrapFileName());
+}
+
+void importInstallerBootstrapSettingsIfNeeded() {
+    const QString bootstrapPath = installerBootstrapPath();
+    if (bootstrapPath.isEmpty() || !QFileInfo::exists(bootstrapPath)) {
+        return;
+    }
+
+    QSettings bootstrap(bootstrapPath, QSettings::IniFormat);
+    const QString dbPath = bootstrap.value("bootstrap/db_path").toString().trimmed();
+    const QString backupPath = bootstrap.value("bootstrap/backup_path").toString().trimmed();
+    const QString logConsent = bootstrap.value("bootstrap/log_consent").toString().trimmed().toLower();
+
+    if (dbPath.isEmpty() && backupPath.isEmpty() && logConsent.isEmpty()) {
+        return;
+    }
+
+    const QString fingerprint = QString::fromLatin1(
+        QCryptographicHash::hash(QStringList{dbPath, backupPath, logConsent}.join('\n').toUtf8(),
+                                 QCryptographicHash::Sha256)
+            .toHex());
+
+    QSettings settings;
+    const QString appliedFingerprint = settings.value("installer_bootstrap/fingerprint").toString().trimmed();
+    if (!fingerprint.isEmpty() && appliedFingerprint == fingerprint) {
+        return;
+    }
+
+    if (!dbPath.isEmpty()) {
+        settings.setValue("db/path", dbPath);
+    }
+    if (!backupPath.isEmpty()) {
+        settings.setValue("backup/path", backupPath);
+    }
+    if (!logConsent.isEmpty()) {
+        settings.setValue("logging/installer_consent", logConsent == "1" || logConsent == "true" || logConsent == "yes");
+    }
+
+    settings.setValue("installer_bootstrap/fingerprint", fingerprint);
+    settings.sync();
+
+    appendRunLog(QString("Imported installer bootstrap settings from %1")
+                     .arg(QDir::toNativeSeparators(bootstrapPath)));
+}
+
 void appendRunLog(const QString &message) {
-    const QString logPath = QDir(AppSettings::dataDirPath()).filePath("app_run.log");
+    const QString trimmed = message.trimmed();
+    if (trimmed.isEmpty()) {
+        return;
+    }
+
+    const QString logPath = configuredRunLogPath();
     QFile file(logPath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
         return;
     }
     QTextStream out(&file);
     out.setEncoding(QStringConverter::Utf8);
-    out << QDateTime::currentDateTime().toString(Qt::ISODate) << " | " << message << '\n';
+    out << QDateTime::currentDateTime().toString(Qt::ISODate) << " | ";
+    if (!trimmed.startsWith("user=", Qt::CaseInsensitive)) {
+        out << runLogIdentityPrefix() << " | ";
+    }
+    out << trimmed << '\n';
 }
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     setupUi();
+    importInstallerBootstrapSettingsIfNeeded();
+    m_currentRoleKey = AppGlobals::roleKeyView();
+    m_currentBaseRole = UserRole::ViewOnly;
+    m_access = accessPolicyForBaseRole(UserRole::ViewOnly);
+    applyAccessControl(m_currentRoleKey);
+    syncRunLogIdentity();
     appendRunLog("MainWindow setupUi complete");
 
     if (!selectDatabaseOnStartup()) {
-        setStatus("Database selection canceled.", false);
-        appendRunLog("Database selection canceled");
+        if (m_relaunchingElevated) {
+            setStatus("Restarting with administrator privileges...", true);
+            appendRunLog("Database startup relaunch requested with UAC elevation");
+        } else {
+            setStatus("Database selection canceled.", false);
+            appendRunLog("Database selection canceled");
+        }
         QTimer::singleShot(0, this, &QWidget::close);
         return;
     }
 
     if (!m_db.isOpen()) {
-        if (!initDb()) {
-            setStatus("Database initialization failed.", false);
-            appendRunLog("initDb failed");
+        if (!m_customDbPath.trimmed().isEmpty()) {
+            if (!initDb()) {
+                setStatus("Database initialization failed.", false);
+                appendRunLog("initDb failed");
+                return;
+            }
+        } else {
+            setStatus("Database setup skipped for this session. Use File -> Load DB... when ready.", false);
+            appendRunLog("Database setup skipped for this session");
+            updateNoDbBanner();
             return;
         }
     }
     appendRunLog("initDb ok");
+    updateNoDbBanner();
 
-    m_currentUsername = "local";
-    m_currentRoleKey = AppGlobals::roleKeyFull();
-    m_currentBaseRole = UserRole::FullAccess;
-    m_access = accessPolicyForBaseRole(UserRole::FullAccess);
+    m_currentUsername.clear();
+    m_currentUserId.clear();
+    m_currentUserFullName.clear();
+    m_currentRoleKey = AppGlobals::roleKeyView();
+    m_currentBaseRole = UserRole::ViewOnly;
+    m_access = accessPolicyForBaseRole(UserRole::ViewOnly);
+    syncRunLogIdentity();
+
+    if (!promptLogin()) {
+        setStatus("Login is required.", false);
+        QTimer::singleShot(0, this, &QWidget::close);
+        return;
+    }
 
     appendRunLog("loadCategories start");
     loadCategories();
@@ -176,6 +641,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     loadHistorySkuList();
     appendRunLog("updateDashboardMetrics start");
     updateDashboardMetrics();
+    scheduleAutomatedBackups();
     appendRunLog("MainWindow initial data loaded");
 }
 
@@ -196,19 +662,31 @@ MainWindow::AccessPolicy MainWindow::accessPolicyForBaseRole(UserRole role) cons
         policy.canAdd = false;
         policy.canEdit = false;
         policy.canDelete = false;
+        policy.canSerialEdit = false;
+        policy.canSerialDelete = false;
         policy.canManageUsers = false;
+        policy.canBackupRestore = false;
+        policy.canExport = true;
         break;
     case UserRole::AddOnly:
         policy.canAdd = true;
         policy.canEdit = true;
         policy.canDelete = false;
+        policy.canSerialEdit = false;
+        policy.canSerialDelete = false;
         policy.canManageUsers = false;
+        policy.canBackupRestore = false;
+        policy.canExport = true;
         break;
     case UserRole::FullAccess:
         policy.canAdd = true;
         policy.canEdit = true;
         policy.canDelete = true;
+        policy.canSerialEdit = true;
+        policy.canSerialDelete = true;
         policy.canManageUsers = true;
+        policy.canBackupRestore = true;
+        policy.canExport = true;
         break;
     }
 
@@ -223,7 +701,8 @@ void MainWindow::applyAccessControl(const QString &roleKey) {
 
     m_currentRoleKey = roleKey;
     m_currentBaseRole = baseRole;
-    m_access = accessPolicyForBaseRole(baseRole);
+    m_access = rolePolicyFor(roleKey);
+    applyUserOverrides(m_currentUsername, &m_access);
 
     if (m_saveButton) {
         m_saveButton->setEnabled(m_access.canAdd);
@@ -241,13 +720,13 @@ void MainWindow::applyAccessControl(const QString &roleKey) {
         m_printBarcodeButton->setEnabled(m_access.canPrint);
     }
     if (m_deleteBarcodeButton) {
-        m_deleteBarcodeButton->setEnabled(m_access.canDelete);
+        m_deleteBarcodeButton->setEnabled(m_access.canSerialDelete);
     }
     if (m_historyEditButton) {
-        m_historyEditButton->setEnabled(m_access.canEdit);
+        m_historyEditButton->setEnabled(m_access.canSerialEdit);
     }
     if (m_historyDeleteButton) {
-        m_historyDeleteButton->setEnabled(m_access.canDelete);
+        m_historyDeleteButton->setEnabled(m_access.canSerialDelete);
     }
     if (m_actionManageUsers) {
         m_actionManageUsers->setEnabled(m_access.canManageUsers);
@@ -258,12 +737,45 @@ void MainWindow::applyAccessControl(const QString &roleKey) {
     if (m_actionSwitchUser) {
         m_actionSwitchUser->setEnabled(true);
     }
+    if (m_actionExportDb) {
+        m_actionExportDb->setEnabled(m_access.canBackupRestore);
+    }
+    if (m_actionRestoreBackup) {
+        m_actionRestoreBackup->setEnabled(m_access.canBackupRestore);
+    }
+    if (m_actionSaveDb) {
+        m_actionSaveDb->setEnabled(m_access.canBackupRestore);
+    }
+    if (m_actionExportSkuCsv) {
+        m_actionExportSkuCsv->setEnabled(m_access.canExport);
+    }
+    if (m_actionExportBarcodeSummaryCsv) {
+        m_actionExportBarcodeSummaryCsv->setEnabled(m_access.canExport);
+    }
+    if (m_backupDbButton) {
+        m_backupDbButton->setEnabled(m_access.canBackupRestore);
+    }
+
+    syncRunLogIdentity();
 }
 
 bool MainWindow::requireAccess(bool allowed, const QString &message) {
-    Q_UNUSED(allowed);
-    Q_UNUSED(message);
-    return true;
+    if (allowed) {
+        return true;
+    }
+
+    const QString userMessage = message.isEmpty() ? QStringLiteral("Access denied.") : message;
+    QMessageBox::warning(this, "Access Denied", userMessage);
+    logAction("ACCESS_DENIED",
+              "permission",
+              QString(),
+              QString(),
+              userMessage,
+              "Security",
+              "PERMISSION",
+              false,
+              userMessage);
+    return false;
 }
 
 QString MainWindow::normalizeUsername(const QString &username) const {
@@ -284,13 +796,13 @@ QString MainWindow::baseRoleToStorage(UserRole role) const {
 
 MainWindow::UserRole MainWindow::baseRoleFromStorage(const QString &role) const {
     const QString value = role.trimmed().toLower();
-    if (value == AppGlobals::roleKeyView() || value == "view_only" || value == "viewonly") {
+    if (value == AppGlobals::roleKeyView() || value == "view_only" || value == "viewonly" || value == "viewer") {
         return UserRole::ViewOnly;
     }
-    if (value == AppGlobals::roleKeyAdd() || value == "add_only" || value == "addonly") {
+    if (value == AppGlobals::roleKeyAdd() || value == "add_only" || value == "addonly" || value == "operator") {
         return UserRole::AddOnly;
     }
-    if (value == AppGlobals::roleKeyFull() || value == "full_access" || value == "fullaccess" || value == "admin") {
+    if (value == AppGlobals::roleKeyFull() || value == "full_access" || value == "fullaccess" || value == "admin" || value == "master_admin" || value == "supervisor") {
         return UserRole::FullAccess;
     }
     return UserRole::ViewOnly;
@@ -347,30 +859,88 @@ bool MainWindow::ensureDefaultRoles() {
     const QString now = QDateTime::currentDateTime().toString(Qt::ISODate);
     QSqlQuery insert(m_db);
     insert.prepare(
-        "INSERT OR IGNORE INTO app_roles (role_key, display_name, base_role, created_at) "
-        "VALUES (?, ?, ?, ?)");
+        "INSERT OR IGNORE INTO app_roles ("
+        "role_key, display_name, base_role, "
+        "can_add, can_edit, can_delete, can_serial_edit, can_serial_delete, "
+        "can_print, can_manage_users, can_backup_restore, can_export, created_at"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
     struct RoleSeed {
         QString key;
         QString name;
         UserRole baseRole;
+        AccessPolicy policy;
     };
 
+    const AccessPolicy viewPolicy = accessPolicyForBaseRole(UserRole::ViewOnly);
+    const AccessPolicy addPolicy = accessPolicyForBaseRole(UserRole::AddOnly);
+    const AccessPolicy fullPolicy = accessPolicyForBaseRole(UserRole::FullAccess);
+
+    AccessPolicy supervisorPolicy = fullPolicy;
+    supervisorPolicy.canManageUsers = false;
+    supervisorPolicy.canBackupRestore = false;
+
+    AccessPolicy operatorPolicy = addPolicy;
+    operatorPolicy.canEdit = false;
+    operatorPolicy.canSerialEdit = false;
+    operatorPolicy.canSerialDelete = false;
+    operatorPolicy.canDelete = false;
+
     const RoleSeed seeds[] = {
-        { AppGlobals::roleKeyView(), AppGlobals::roleNameView(), UserRole::ViewOnly },
-        { AppGlobals::roleKeyAdd(), AppGlobals::roleNameAdd(), UserRole::AddOnly },
-        { AppGlobals::roleKeyFull(), AppGlobals::roleNameFull(), UserRole::FullAccess }
+        { AppGlobals::roleKeyView(), AppGlobals::roleNameView(), UserRole::ViewOnly, viewPolicy },
+        { AppGlobals::roleKeyAdd(), AppGlobals::roleNameAdd(), UserRole::AddOnly, addPolicy },
+        { AppGlobals::roleKeyFull(), AppGlobals::roleNameFull(), UserRole::FullAccess, fullPolicy },
+        { QStringLiteral("master_admin"), QStringLiteral("Master Admin"), UserRole::FullAccess, fullPolicy },
+        { QStringLiteral("supervisor"), QStringLiteral("Supervisor"), UserRole::FullAccess, supervisorPolicy },
+        { QStringLiteral("operator"), QStringLiteral("Operator"), UserRole::AddOnly, operatorPolicy },
+        { QStringLiteral("viewer"), QStringLiteral("Viewer"), UserRole::ViewOnly, viewPolicy }
     };
 
     for (const auto &seed : seeds) {
         insert.addBindValue(seed.key);
         insert.addBindValue(seed.name);
         insert.addBindValue(baseRoleToStorage(seed.baseRole));
+        insert.addBindValue(seed.policy.canAdd ? 1 : 0);
+        insert.addBindValue(seed.policy.canEdit ? 1 : 0);
+        insert.addBindValue(seed.policy.canDelete ? 1 : 0);
+        insert.addBindValue(seed.policy.canSerialEdit ? 1 : 0);
+        insert.addBindValue(seed.policy.canSerialDelete ? 1 : 0);
+        insert.addBindValue(seed.policy.canPrint ? 1 : 0);
+        insert.addBindValue(seed.policy.canManageUsers ? 1 : 0);
+        insert.addBindValue(seed.policy.canBackupRestore ? 1 : 0);
+        insert.addBindValue(seed.policy.canExport ? 1 : 0);
         insert.addBindValue(now);
         if (!insert.exec()) {
             return false;
         }
         insert.finish();
+
+        QSqlQuery patchDefaults(m_db);
+        patchDefaults.prepare(
+            "UPDATE app_roles SET "
+            "can_add = COALESCE(can_add, ?), "
+            "can_edit = COALESCE(can_edit, ?), "
+            "can_delete = COALESCE(can_delete, ?), "
+            "can_serial_edit = COALESCE(can_serial_edit, ?), "
+            "can_serial_delete = COALESCE(can_serial_delete, ?), "
+            "can_print = COALESCE(can_print, ?), "
+            "can_manage_users = COALESCE(can_manage_users, ?), "
+            "can_backup_restore = COALESCE(can_backup_restore, ?), "
+            "can_export = COALESCE(can_export, ?) "
+            "WHERE role_key = ?");
+        patchDefaults.addBindValue(seed.policy.canAdd ? 1 : 0);
+        patchDefaults.addBindValue(seed.policy.canEdit ? 1 : 0);
+        patchDefaults.addBindValue(seed.policy.canDelete ? 1 : 0);
+        patchDefaults.addBindValue(seed.policy.canSerialEdit ? 1 : 0);
+        patchDefaults.addBindValue(seed.policy.canSerialDelete ? 1 : 0);
+        patchDefaults.addBindValue(seed.policy.canPrint ? 1 : 0);
+        patchDefaults.addBindValue(seed.policy.canManageUsers ? 1 : 0);
+        patchDefaults.addBindValue(seed.policy.canBackupRestore ? 1 : 0);
+        patchDefaults.addBindValue(seed.policy.canExport ? 1 : 0);
+        patchDefaults.addBindValue(seed.key);
+        if (!patchDefaults.exec()) {
+            return false;
+        }
     }
 
     return true;
@@ -442,6 +1012,13 @@ bool MainWindow::createUserAccount(const QString &username,
     if (password.isEmpty()) {
         if (errorMessage) {
             *errorMessage = "Password is required.";
+        }
+        return false;
+    }
+    QString passwordReason;
+    if (!isStrongPassword(password, &passwordReason)) {
+        if (errorMessage) {
+            *errorMessage = passwordReason;
         }
         return false;
     }
@@ -554,6 +1131,7 @@ bool MainWindow::verifyUserCredentials(const QString &username,
 bool MainWindow::promptCreateUser(const QString &forcedRoleKey, bool allowCancel) {
     QDialog dialog(this);
     dialog.setWindowTitle("Create User Account");
+    dialog.setStyleSheet(qApp ? qApp->styleSheet() : m_darkStyleSheet);
     QFormLayout *formLayout = new QFormLayout(&dialog);
 
     QLineEdit *nameField = new QLineEdit(&dialog);
@@ -601,6 +1179,11 @@ bool MainWindow::promptCreateUser(const QString &forcedRoleKey, bool allowCancel
             errorLabel->setText("Passwords do not match.");
             return;
         }
+        QString passwordReason;
+        if (!isStrongPassword(password, &passwordReason)) {
+            errorLabel->setText(passwordReason);
+            return;
+        }
         QString error;
         if (!createUserAccount(username, password, forcedRoleKey, email, userId, fullName, &error)) {
             errorLabel->setText(error);
@@ -621,23 +1204,87 @@ bool MainWindow::ensureInitialAdmin() {
         return false;
     }
 
+    const QString username = normalizeUsername(kEmbeddedDeveloperUsername);
     QSqlQuery q(m_db);
-    if (!q.exec("SELECT COUNT(*) FROM app_users")) {
+    q.prepare("SELECT COUNT(*) FROM app_users WHERE username = ?");
+    q.addBindValue(username);
+    if (!q.exec() || !q.next()) {
+        appendRunLog(QString("Embedded developer account check failed for %1")
+                         .arg(kEmbeddedDeveloperUsername));
         return false;
     }
-    if (q.next() && q.value(0).toInt() > 0) {
+
+    const QString salt = generateSalt();
+    const QString hash = hashPasswordWithSalt(kEmbeddedDeveloperPassword, salt);
+
+    if (q.value(0).toInt() > 0) {
+        QSqlQuery update(m_db);
+        update.prepare(
+            "UPDATE app_users SET user_id = ?, full_name = ?, email = ?, password_hash = ?, password_salt = ?, role = ? "
+            "WHERE username = ?");
+        update.addBindValue(kEmbeddedDeveloperUserId);
+        update.addBindValue(kEmbeddedDeveloperFullName);
+        update.addBindValue(kEmbeddedDeveloperEmail);
+        update.addBindValue(hash);
+        update.addBindValue(salt);
+        update.addBindValue(kEmbeddedDeveloperRole);
+        update.addBindValue(username);
+        if (!update.exec()) {
+            appendRunLog(QString("Embedded developer account sync failed for %1: %2")
+                             .arg(kEmbeddedDeveloperUsername, update.lastError().text()));
+            return false;
+        }
+
+        logAction("EMBEDDED_ACCOUNT_SYNC",
+                  kEmbeddedDeveloperUsername,
+                  QString(),
+                  QString("{\"role\":\"%1\"}").arg(kEmbeddedDeveloperRole),
+                  "Embedded developer credentials synced on startup",
+                  "Security",
+                  "PERMISSION_CHANGE",
+                  true,
+                  QString(),
+                  kEmbeddedDeveloperUsername);
+
+        appendRunLog(QString("Embedded developer account synced for %1")
+                         .arg(kEmbeddedDeveloperUsername));
         return true;
     }
 
-    QMessageBox::information(this,
-                             "User Setup",
-                             "No user accounts found. Create an admin account to continue.");
-    return promptCreateUser(AppGlobals::roleKeyFull(), false);
+    QString error;
+    const bool created = createUserAccount(kEmbeddedDeveloperUsername,
+                                           kEmbeddedDeveloperPassword,
+                                           kEmbeddedDeveloperRole,
+                                           kEmbeddedDeveloperEmail,
+                                           kEmbeddedDeveloperUserId,
+                                           kEmbeddedDeveloperFullName,
+                                           &error);
+    if (!created) {
+        appendRunLog(QString("Embedded developer account bootstrap failed for %1: %2")
+                         .arg(kEmbeddedDeveloperUsername, error));
+        return false;
+    }
+
+    logAction("BOOTSTRAP_USER_CREATE",
+              kEmbeddedDeveloperUsername,
+              QString(),
+              QString("{\"role\":\"%1\"}").arg(kEmbeddedDeveloperRole),
+              "Created from embedded developer credentials",
+              "Security",
+              "PERMISSION_CHANGE",
+              true,
+              QString(),
+              kEmbeddedDeveloperUsername);
+
+    appendRunLog(QString("Embedded developer account created for %1")
+                     .arg(kEmbeddedDeveloperUsername));
+    return true;
 }
 
 bool MainWindow::promptLogin() {
     QDialog dialog(this);
     dialog.setWindowTitle("User Login");
+    dialog.setStyleSheet(qApp ? qApp->styleSheet() : m_darkStyleSheet);
     QFormLayout *formLayout = new QFormLayout(&dialog);
 
     QLineEdit *usernameField = new QLineEdit(&dialog);
@@ -667,16 +1314,44 @@ bool MainWindow::promptLogin() {
         if (!verifyUserCredentials(username, password, &roleKey)) {
             errorLabel->setText("Invalid username or password.");
             passwordField->clear();
-            logAction("LOGIN_FAILED", username, QString(), QString(), "Invalid credentials");
+            logAction("LOGIN_FAILED",
+                      username,
+                      QString(),
+                      QString(),
+                      "Invalid credentials",
+                      "Security",
+                      "LOGIN",
+                      false,
+                      "Invalid credentials",
+                      username);
             appendRunLog(QString("Login failed for %1").arg(username));
             return;
         }
 
         m_currentUsername = username;
+        m_currentUserId.clear();
+        m_currentUserFullName.clear();
+        QSqlQuery userInfo(m_db);
+        userInfo.prepare("SELECT user_id, full_name FROM app_users WHERE username = ?");
+        userInfo.addBindValue(username);
+        if (userInfo.exec() && userInfo.next()) {
+            m_currentUserId = userInfo.value(0).toString();
+            m_currentUserFullName = userInfo.value(1).toString();
+        }
         applyAccessControl(roleKey);
+        syncRunLogIdentity();
         updateWindowTitleWithUser();
         setStatus(QString("Logged in as %1 (%2).").arg(m_currentUsername, roleDisplayName(m_currentRoleKey)), true);
-        logAction("LOGIN_SUCCESS", m_currentUsername, QString(), QString(), QString());
+        logAction("LOGIN_SUCCESS",
+                  m_currentUsername,
+                  QString(),
+                  QString(),
+                  QString(),
+                  "Security",
+                  "LOGIN",
+                  true,
+                  QString(),
+                  m_currentUsername);
         appendRunLog(QString("Login success for %1").arg(m_currentUsername));
         QTimer::singleShot(0, this, [this]() {
             if (!isVisible()) {
@@ -715,7 +1390,11 @@ void MainWindow::loadUsersIntoTable(QTableWidget *table) {
     table->setRowCount(0);
 
     QSqlQuery q(m_db);
-    q.prepare("SELECT username, full_name, user_id, email, role, created_at FROM app_users ORDER BY username");
+    q.prepare(
+        "SELECT username, full_name, user_id, email, role, created_at, "
+        "perm_add, perm_edit, perm_delete, perm_serial_edit, perm_serial_delete, "
+        "perm_print, perm_manage_users, perm_backup_restore, perm_export "
+        "FROM app_users ORDER BY username");
     if (!q.exec()) {
         return;
     }
@@ -729,13 +1408,22 @@ void MainWindow::loadUsersIntoTable(QTableWidget *table) {
         const QString email = q.value(3).toString();
         const QString roleValue = q.value(4).toString();
         const QString createdAt = q.value(5).toString();
+        const bool hasOverride =
+            !q.isNull(6) || !q.isNull(7) || !q.isNull(8) || !q.isNull(9) || !q.isNull(10) ||
+            !q.isNull(11) || !q.isNull(12) || !q.isNull(13) || !q.isNull(14);
+        const QString overrideLabel = hasOverride ? "Custom Override" : "Role Default";
 
         table->setItem(row, 0, new QTableWidgetItem(username));
         table->setItem(row, 1, new QTableWidgetItem(fullName));
         table->setItem(row, 2, new QTableWidgetItem(userId));
         table->setItem(row, 3, new QTableWidgetItem(email));
         table->setItem(row, 4, new QTableWidgetItem(roleDisplayName(roleValue)));
-        table->setItem(row, 5, new QTableWidgetItem(createdAt));
+        if (table->columnCount() >= 7) {
+            table->setItem(row, 5, new QTableWidgetItem(overrideLabel));
+            table->setItem(row, 6, new QTableWidgetItem(createdAt));
+        } else {
+            table->setItem(row, 5, new QTableWidgetItem(createdAt));
+        }
         ++row;
     }
 
@@ -752,12 +1440,28 @@ void MainWindow::showSettingsDialog() {
 
     QDialog dialog(this);
     dialog.setWindowTitle("Settings");
+    dialog.setSizeGripEnabled(true);
+    dialog.setMinimumSize(900, 620);
+    dialog.resize(1180, 760);
     QVBoxLayout *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(8);
+
+    QScrollArea *settingsScrollArea = new QScrollArea(&dialog);
+    settingsScrollArea->setWidgetResizable(true);
+    settingsScrollArea->setFrameShape(QFrame::NoFrame);
+
+    QWidget *settingsContent = new QWidget(settingsScrollArea);
+    QVBoxLayout *contentLayout = new QVBoxLayout(settingsContent);
+    contentLayout->setContentsMargins(6, 6, 6, 6);
+    contentLayout->setSpacing(12);
+    settingsScrollArea->setWidget(settingsContent);
+    layout->addWidget(settingsScrollArea, 1);
 
     // Roles section
-    QGroupBox *rolesBox = new QGroupBox("Roles", &dialog);
+    QGroupBox *rolesBox = new QGroupBox("Roles", settingsContent);
     QVBoxLayout *rolesLayout = new QVBoxLayout(rolesBox);
-    QLabel *rolesInfo = new QLabel("Add roles and choose access level.", rolesBox);
+    QLabel *rolesInfo = new QLabel("Add or update roles and toggle Add/Edit/Delete/Serial/Backup/Export permissions.", rolesBox);
     rolesLayout->addWidget(rolesInfo);
 
     QTableWidget *rolesTable = new QTableWidget(rolesBox);
@@ -766,6 +1470,7 @@ void MainWindow::showSettingsDialog() {
     rolesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     rolesTable->setSelectionMode(QAbstractItemView::SingleSelection);
     rolesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    rolesTable->setMinimumHeight(170);
     rolesLayout->addWidget(rolesTable);
 
     auto loadRolesTable = [&]() {
@@ -798,31 +1503,101 @@ void MainWindow::showSettingsDialog() {
     roleAccessCombo->addItem(baseRoleToDisplay(UserRole::ViewOnly), baseRoleToStorage(UserRole::ViewOnly));
     roleAccessCombo->addItem(baseRoleToDisplay(UserRole::AddOnly), baseRoleToStorage(UserRole::AddOnly));
     roleAccessCombo->addItem(baseRoleToDisplay(UserRole::FullAccess), baseRoleToStorage(UserRole::FullAccess));
+    QCheckBox *roleCanAdd = new QCheckBox("Add", rolesBox);
+    QCheckBox *roleCanEdit = new QCheckBox("Edit", rolesBox);
+    QCheckBox *roleCanDelete = new QCheckBox("Delete", rolesBox);
+    QCheckBox *roleCanSerialEdit = new QCheckBox("Serial Edit", rolesBox);
+    QCheckBox *roleCanSerialDelete = new QCheckBox("Serial Delete", rolesBox);
+    QCheckBox *roleCanManageUsers = new QCheckBox("Manage Users", rolesBox);
+    QCheckBox *roleCanBackup = new QCheckBox("Backup/Restore", rolesBox);
+    QCheckBox *roleCanExport = new QCheckBox("Export", rolesBox);
+    QCheckBox *roleCanPrint = new QCheckBox("Print", rolesBox);
+
+    auto *rolePermLayout = new QGridLayout();
+    rolePermLayout->addWidget(roleCanAdd, 0, 0);
+    rolePermLayout->addWidget(roleCanEdit, 0, 1);
+    rolePermLayout->addWidget(roleCanDelete, 0, 2);
+    rolePermLayout->addWidget(roleCanSerialEdit, 1, 0);
+    rolePermLayout->addWidget(roleCanSerialDelete, 1, 1);
+    rolePermLayout->addWidget(roleCanManageUsers, 1, 2);
+    rolePermLayout->addWidget(roleCanBackup, 2, 0);
+    rolePermLayout->addWidget(roleCanExport, 2, 1);
+    rolePermLayout->addWidget(roleCanPrint, 2, 2);
+
+    auto setRoleChecks = [&](const AccessPolicy &policy) {
+        roleCanAdd->setChecked(policy.canAdd);
+        roleCanEdit->setChecked(policy.canEdit);
+        roleCanDelete->setChecked(policy.canDelete);
+        roleCanSerialEdit->setChecked(policy.canSerialEdit);
+        roleCanSerialDelete->setChecked(policy.canSerialDelete);
+        roleCanManageUsers->setChecked(policy.canManageUsers);
+        roleCanBackup->setChecked(policy.canBackupRestore);
+        roleCanExport->setChecked(policy.canExport);
+        roleCanPrint->setChecked(policy.canPrint);
+    };
+    setRoleChecks(accessPolicyForBaseRole(UserRole::ViewOnly));
+
     roleForm->addRow("Role Name", roleNameField);
     roleForm->addRow("Access Level", roleAccessCombo);
+    roleForm->addRow("Permissions", rolePermLayout);
     rolesLayout->addLayout(roleForm);
 
     QLabel *rolesStatus = new QLabel(rolesBox);
     rolesStatus->setStyleSheet("color: #c62828;");
     rolesLayout->addWidget(rolesStatus);
 
-    QPushButton *addRoleButton = new QPushButton("Add Role", rolesBox);
+    QPushButton *addRoleButton = new QPushButton("Add / Update Role", rolesBox);
     rolesLayout->addWidget(addRoleButton);
 
-    layout->addWidget(rolesBox);
+    connect(roleAccessCombo, qOverload<int>(&QComboBox::currentIndexChanged), &dialog, [&]() {
+        const UserRole baseRole = baseRoleFromStorage(roleAccessCombo->currentData().toString());
+        setRoleChecks(accessPolicyForBaseRole(baseRole));
+    });
+
+    connect(rolesTable, &QTableWidget::itemSelectionChanged, &dialog, [&]() {
+        const int row = rolesTable->currentRow();
+        if (row < 0) {
+            return;
+        }
+        const QString roleName = rolesTable->item(row, 0)->text();
+        if (roleName.isEmpty()) {
+            return;
+        }
+
+        QSqlQuery roleQuery(m_db);
+        roleQuery.prepare("SELECT role_key, base_role FROM app_roles WHERE display_name = ?");
+        roleQuery.addBindValue(roleName);
+        QString roleKey = roleKeyFromName(roleName);
+        QString baseRole = baseRoleToStorage(UserRole::ViewOnly);
+        if (roleQuery.exec() && roleQuery.next()) {
+            roleKey = roleQuery.value(0).toString();
+            baseRole = roleQuery.value(1).toString();
+        }
+
+        roleNameField->setText(roleName);
+        {
+            QSignalBlocker blocker(roleAccessCombo);
+            const int index = roleAccessCombo->findData(baseRole);
+            roleAccessCombo->setCurrentIndex(index >= 0 ? index : 0);
+        }
+        setRoleChecks(rolePolicyFor(roleKey));
+    });
+
+    contentLayout->addWidget(rolesBox);
 
     // Users section
-    QGroupBox *usersBox = new QGroupBox("Users", &dialog);
+    QGroupBox *usersBox = new QGroupBox("Users", settingsContent);
     QVBoxLayout *usersLayout = new QVBoxLayout(usersBox);
     QLabel *usersInfo = new QLabel("Add user accounts and assign roles.", usersBox);
     usersLayout->addWidget(usersInfo);
 
     QTableWidget *usersTable = new QTableWidget(usersBox);
-    usersTable->setColumnCount(6);
-    usersTable->setHorizontalHeaderLabels({ "Username", "Name", "User ID", "Email", "Role", "Created" });
+    usersTable->setColumnCount(7);
+    usersTable->setHorizontalHeaderLabels({ "Username", "Name", "User ID", "Email", "Role", "Permission Mode", "Created" });
     usersTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     usersTable->setSelectionMode(QAbstractItemView::SingleSelection);
     usersTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    usersTable->setMinimumHeight(200);
     usersLayout->addWidget(usersTable);
     loadUsersIntoTable(usersTable);
 
@@ -839,6 +1614,53 @@ void MainWindow::showSettingsDialog() {
     QComboBox *roleCombo = new QComboBox(usersBox);
     loadRolesIntoCombo(roleCombo);
 
+    QCheckBox *customOverrideCheck = new QCheckBox("Custom permission override", usersBox);
+    QCheckBox *userCanAdd = new QCheckBox("Add", usersBox);
+    QCheckBox *userCanEdit = new QCheckBox("Edit", usersBox);
+    QCheckBox *userCanDelete = new QCheckBox("Delete", usersBox);
+    QCheckBox *userCanSerialEdit = new QCheckBox("Serial Edit", usersBox);
+    QCheckBox *userCanSerialDelete = new QCheckBox("Serial Delete", usersBox);
+    QCheckBox *userCanManageUsers = new QCheckBox("Manage Users", usersBox);
+    QCheckBox *userCanBackup = new QCheckBox("Backup/Restore", usersBox);
+    QCheckBox *userCanExport = new QCheckBox("Export", usersBox);
+    QCheckBox *userCanPrint = new QCheckBox("Print", usersBox);
+
+    auto *userPermLayout = new QGridLayout();
+    userPermLayout->addWidget(userCanAdd, 0, 0);
+    userPermLayout->addWidget(userCanEdit, 0, 1);
+    userPermLayout->addWidget(userCanDelete, 0, 2);
+    userPermLayout->addWidget(userCanSerialEdit, 1, 0);
+    userPermLayout->addWidget(userCanSerialDelete, 1, 1);
+    userPermLayout->addWidget(userCanManageUsers, 1, 2);
+    userPermLayout->addWidget(userCanBackup, 2, 0);
+    userPermLayout->addWidget(userCanExport, 2, 1);
+    userPermLayout->addWidget(userCanPrint, 2, 2);
+
+    auto applyPolicyToUserChecks = [&](const AccessPolicy &policy) {
+        userCanAdd->setChecked(policy.canAdd);
+        userCanEdit->setChecked(policy.canEdit);
+        userCanDelete->setChecked(policy.canDelete);
+        userCanSerialEdit->setChecked(policy.canSerialEdit);
+        userCanSerialDelete->setChecked(policy.canSerialDelete);
+        userCanManageUsers->setChecked(policy.canManageUsers);
+        userCanBackup->setChecked(policy.canBackupRestore);
+        userCanExport->setChecked(policy.canExport);
+        userCanPrint->setChecked(policy.canPrint);
+    };
+
+    auto setUserOverrideEnabled = [&]() {
+        const bool enabled = customOverrideCheck->isChecked();
+        userCanAdd->setEnabled(enabled);
+        userCanEdit->setEnabled(enabled);
+        userCanDelete->setEnabled(enabled);
+        userCanSerialEdit->setEnabled(enabled);
+        userCanSerialDelete->setEnabled(enabled);
+        userCanManageUsers->setEnabled(enabled);
+        userCanBackup->setEnabled(enabled);
+        userCanExport->setEnabled(enabled);
+        userCanPrint->setEnabled(enabled);
+    };
+
     userForm->addRow("Name", nameField);
     userForm->addRow("User ID", userIdField);
     userForm->addRow("Email", emailField);
@@ -846,6 +1668,8 @@ void MainWindow::showSettingsDialog() {
     userForm->addRow("Password", passwordField);
     userForm->addRow("Confirm Password", confirmField);
     userForm->addRow("Role", roleCombo);
+    userForm->addRow(customOverrideCheck);
+    userForm->addRow("Override Permissions", userPermLayout);
     usersLayout->addLayout(userForm);
 
     QLabel *usersStatus = new QLabel(usersBox);
@@ -855,7 +1679,30 @@ void MainWindow::showSettingsDialog() {
     QPushButton *addUserButton = new QPushButton("Add User", usersBox);
     usersLayout->addWidget(addUserButton);
 
-    layout->addWidget(usersBox);
+    QPushButton *applyOverrideButton = new QPushButton("Apply Override To Selected User", usersBox);
+    QPushButton *clearOverrideButton = new QPushButton("Clear Override For Selected User", usersBox);
+    usersLayout->addWidget(applyOverrideButton);
+    usersLayout->addWidget(clearOverrideButton);
+
+    const AccessPolicy initialUserPolicy = rolePolicyFor(roleCombo->currentData().toString());
+    applyPolicyToUserChecks(initialUserPolicy);
+    customOverrideCheck->setChecked(false);
+    setUserOverrideEnabled();
+
+    connect(roleCombo, qOverload<int>(&QComboBox::currentIndexChanged), &dialog, [&]() {
+        if (!customOverrideCheck->isChecked()) {
+            applyPolicyToUserChecks(rolePolicyFor(roleCombo->currentData().toString()));
+        }
+    });
+    connect(customOverrideCheck, &QCheckBox::toggled, &dialog, [&]() {
+        setUserOverrideEnabled();
+        if (!customOverrideCheck->isChecked()) {
+            applyPolicyToUserChecks(rolePolicyFor(roleCombo->currentData().toString()));
+        }
+    });
+
+    contentLayout->addWidget(usersBox);
+    contentLayout->addStretch(1);
 
     QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
     layout->addWidget(buttons);
@@ -869,9 +1716,20 @@ void MainWindow::showSettingsDialog() {
             return;
         }
         const QString baseRole = roleAccessCombo->currentData().toString();
+        AccessPolicy newPolicy;
+        newPolicy.canAdd = roleCanAdd->isChecked();
+        newPolicy.canEdit = roleCanEdit->isChecked();
+        newPolicy.canDelete = roleCanDelete->isChecked();
+        newPolicy.canSerialEdit = roleCanSerialEdit->isChecked();
+        newPolicy.canSerialDelete = roleCanSerialDelete->isChecked();
+        newPolicy.canManageUsers = roleCanManageUsers->isChecked();
+        newPolicy.canBackupRestore = roleCanBackup->isChecked();
+        newPolicy.canExport = roleCanExport->isChecked();
+        newPolicy.canPrint = roleCanPrint->isChecked();
+        const AccessPolicy oldPolicy = rolePolicyFor(roleKey);
 
         QSqlQuery insert(m_db);
-        insert.prepare("INSERT INTO app_roles (role_key, display_name, base_role, created_at) VALUES (?, ?, ?, ?)");
+        insert.prepare("INSERT OR IGNORE INTO app_roles (role_key, display_name, base_role, created_at) VALUES (?, ?, ?, ?)");
         insert.addBindValue(roleKey);
         insert.addBindValue(roleName);
         insert.addBindValue(baseRole);
@@ -883,12 +1741,34 @@ void MainWindow::showSettingsDialog() {
             return;
         }
 
+        QSqlQuery update(m_db);
+        update.prepare("UPDATE app_roles SET display_name = ?, base_role = ? WHERE role_key = ?");
+        update.addBindValue(roleName);
+        update.addBindValue(baseRole);
+        update.addBindValue(roleKey);
+        if (!update.exec() || !upsertRolePermissions(roleKey, newPolicy)) {
+            rolesStatus->setStyleSheet("color: #c62828;");
+            rolesStatus->setText("Failed to save role permissions.");
+            return;
+        }
+
         rolesStatus->setStyleSheet("color: #1b5e20;");
-        rolesStatus->setText("Role added.");
+        rolesStatus->setText("Role saved.");
+        logAction("ROLE_PERMISSION_UPDATE",
+                  roleKey,
+                  rolePolicySummary(oldPolicy),
+                  rolePolicySummary(newPolicy),
+                  QString(),
+                  "Security",
+                  "PERMISSION_CHANGE",
+                  true,
+                  QString(),
+                  roleKey);
         roleNameField->clear();
         roleAccessCombo->setCurrentIndex(0);
         loadRolesTable();
         loadRolesIntoCombo(roleCombo);
+        applyAccessControl(m_currentRoleKey);
     });
 
     connect(addUserButton, &QPushButton::clicked, &dialog, [&]() {
@@ -918,8 +1798,35 @@ void MainWindow::showSettingsDialog() {
             return;
         }
 
+        if (customOverrideCheck->isChecked()) {
+            AccessPolicy overridePolicy;
+            overridePolicy.canAdd = userCanAdd->isChecked();
+            overridePolicy.canEdit = userCanEdit->isChecked();
+            overridePolicy.canDelete = userCanDelete->isChecked();
+            overridePolicy.canSerialEdit = userCanSerialEdit->isChecked();
+            overridePolicy.canSerialDelete = userCanSerialDelete->isChecked();
+            overridePolicy.canManageUsers = userCanManageUsers->isChecked();
+            overridePolicy.canBackupRestore = userCanBackup->isChecked();
+            overridePolicy.canExport = userCanExport->isChecked();
+            overridePolicy.canPrint = userCanPrint->isChecked();
+            upsertUserPermissionOverride(username, &overridePolicy);
+        } else {
+            upsertUserPermissionOverride(username, nullptr);
+        }
+
         usersStatus->setStyleSheet("color: #1b5e20;");
         usersStatus->setText("User account created.");
+        logAction("USER_CREATE",
+                  username,
+                  QString(),
+                  QString("{\"role\":\"%1\",\"custom_override\":%2}")
+                      .arg(roleKey, customOverrideCheck->isChecked() ? "true" : "false"),
+                  QString(),
+                  "Security",
+                  "PERMISSION_CHANGE",
+                  true,
+                  QString(),
+                  username);
         nameField->clear();
         userIdField->clear();
         emailField->clear();
@@ -927,7 +1834,149 @@ void MainWindow::showSettingsDialog() {
         passwordField->clear();
         confirmField->clear();
         roleCombo->setCurrentIndex(0);
+        customOverrideCheck->setChecked(false);
+        setUserOverrideEnabled();
         loadUsersIntoTable(usersTable);
+    });
+
+    connect(usersTable, &QTableWidget::itemSelectionChanged, &dialog, [&]() {
+        const int row = usersTable->currentRow();
+        if (row < 0) {
+            return;
+        }
+        const QString selectedUser = usersTable->item(row, 0)->text();
+        if (selectedUser.isEmpty()) {
+            return;
+        }
+
+        QSqlQuery q(m_db);
+        q.prepare(
+            "SELECT role, "
+            "perm_add, perm_edit, perm_delete, perm_serial_edit, perm_serial_delete, "
+            "perm_print, perm_manage_users, perm_backup_restore, perm_export "
+            "FROM app_users WHERE username = ?");
+        q.addBindValue(selectedUser);
+        if (!q.exec() || !q.next()) {
+            return;
+        }
+
+        const QString roleKey = q.value(0).toString();
+        const int roleIndex = roleCombo->findData(roleKey);
+        if (roleIndex >= 0) {
+            roleCombo->setCurrentIndex(roleIndex);
+        }
+
+        AccessPolicy effectivePolicy = rolePolicyFor(roleKey);
+        const bool hasOverride =
+            !q.isNull(1) || !q.isNull(2) || !q.isNull(3) || !q.isNull(4) || !q.isNull(5) ||
+            !q.isNull(6) || !q.isNull(7) || !q.isNull(8) || !q.isNull(9);
+        if (hasOverride) {
+            if (!q.isNull(1)) effectivePolicy.canAdd = q.value(1).toInt() != 0;
+            if (!q.isNull(2)) effectivePolicy.canEdit = q.value(2).toInt() != 0;
+            if (!q.isNull(3)) effectivePolicy.canDelete = q.value(3).toInt() != 0;
+            if (!q.isNull(4)) effectivePolicy.canSerialEdit = q.value(4).toInt() != 0;
+            if (!q.isNull(5)) effectivePolicy.canSerialDelete = q.value(5).toInt() != 0;
+            if (!q.isNull(6)) effectivePolicy.canPrint = q.value(6).toInt() != 0;
+            if (!q.isNull(7)) effectivePolicy.canManageUsers = q.value(7).toInt() != 0;
+            if (!q.isNull(8)) effectivePolicy.canBackupRestore = q.value(8).toInt() != 0;
+            if (!q.isNull(9)) effectivePolicy.canExport = q.value(9).toInt() != 0;
+        }
+        customOverrideCheck->setChecked(hasOverride);
+        userCanAdd->setChecked(effectivePolicy.canAdd);
+        userCanEdit->setChecked(effectivePolicy.canEdit);
+        userCanDelete->setChecked(effectivePolicy.canDelete);
+        userCanSerialEdit->setChecked(effectivePolicy.canSerialEdit);
+        userCanSerialDelete->setChecked(effectivePolicy.canSerialDelete);
+        userCanManageUsers->setChecked(effectivePolicy.canManageUsers);
+        userCanBackup->setChecked(effectivePolicy.canBackupRestore);
+        userCanExport->setChecked(effectivePolicy.canExport);
+        userCanPrint->setChecked(effectivePolicy.canPrint);
+        setUserOverrideEnabled();
+    });
+
+    connect(applyOverrideButton, &QPushButton::clicked, &dialog, [&]() {
+        const int row = usersTable->currentRow();
+        if (row < 0) {
+            usersStatus->setStyleSheet("color: #c62828;");
+            usersStatus->setText("Select a user first.");
+            return;
+        }
+        const QString selectedUser = usersTable->item(row, 0)->text();
+        if (selectedUser.isEmpty()) {
+            usersStatus->setStyleSheet("color: #c62828;");
+            usersStatus->setText("Invalid user selection.");
+            return;
+        }
+        AccessPolicy overridePolicy;
+        overridePolicy.canAdd = userCanAdd->isChecked();
+        overridePolicy.canEdit = userCanEdit->isChecked();
+        overridePolicy.canDelete = userCanDelete->isChecked();
+        overridePolicy.canSerialEdit = userCanSerialEdit->isChecked();
+        overridePolicy.canSerialDelete = userCanSerialDelete->isChecked();
+        overridePolicy.canManageUsers = userCanManageUsers->isChecked();
+        overridePolicy.canBackupRestore = userCanBackup->isChecked();
+        overridePolicy.canExport = userCanExport->isChecked();
+        overridePolicy.canPrint = userCanPrint->isChecked();
+        if (!upsertUserPermissionOverride(selectedUser, &overridePolicy)) {
+            usersStatus->setStyleSheet("color: #c62828;");
+            usersStatus->setText("Failed to apply override.");
+            return;
+        }
+        usersStatus->setStyleSheet("color: #1b5e20;");
+        usersStatus->setText("Override applied.");
+        customOverrideCheck->setChecked(true);
+        loadUsersIntoTable(usersTable);
+        if (normalizeUsername(selectedUser) == normalizeUsername(m_currentUsername)) {
+            applyAccessControl(m_currentRoleKey);
+        }
+        logAction("USER_PERMISSION_OVERRIDE",
+                  selectedUser,
+                  QString(),
+                  rolePolicySummary(overridePolicy),
+                  QString(),
+                  "Security",
+                  "PERMISSION_CHANGE",
+                  true,
+                  QString(),
+                  selectedUser);
+    });
+
+    connect(clearOverrideButton, &QPushButton::clicked, &dialog, [&]() {
+        const int row = usersTable->currentRow();
+        if (row < 0) {
+            usersStatus->setStyleSheet("color: #c62828;");
+            usersStatus->setText("Select a user first.");
+            return;
+        }
+        const QString selectedUser = usersTable->item(row, 0)->text();
+        if (selectedUser.isEmpty()) {
+            usersStatus->setStyleSheet("color: #c62828;");
+            usersStatus->setText("Invalid user selection.");
+            return;
+        }
+        if (!upsertUserPermissionOverride(selectedUser, nullptr)) {
+            usersStatus->setStyleSheet("color: #c62828;");
+            usersStatus->setText("Failed to clear override.");
+            return;
+        }
+        usersStatus->setStyleSheet("color: #1b5e20;");
+        usersStatus->setText("Override cleared.");
+        customOverrideCheck->setChecked(false);
+        setUserOverrideEnabled();
+        loadUsersIntoTable(usersTable);
+        if (normalizeUsername(selectedUser) == normalizeUsername(m_currentUsername)) {
+            applyAccessControl(m_currentRoleKey);
+        }
+        logAction("USER_PERMISSION_OVERRIDE_CLEAR",
+                  selectedUser,
+                  QString(),
+                  QString(),
+                  QString(),
+                  "Security",
+                  "PERMISSION_CHANGE",
+                  true,
+                  QString(),
+                  selectedUser);
     });
 
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
@@ -950,7 +1999,7 @@ void MainWindow::showSkuDetailsDialog(const QString &sku) {
         "SELECT sku, part_name, part_number, category_code, sub_category, "
         "item_serial, unique_variation, description, storage, rack_number, bin_number, "
         "dimensions, weight_value, weight_unit, product_family, image_blob, image_path, comments, created_at "
-        "FROM sku_catalog WHERE sku = ?");
+        "FROM sku_catalog_active WHERE sku = ?");
     q.addBindValue(trimmedSku);
     if (!q.exec() || !q.next()) {
         setStatus("Unable to load SKU details.", false);
@@ -1033,40 +2082,678 @@ bool MainWindow::verifyAdminCredentials(const QString &username, const QString &
         return false;
     }
 
-    UserRole baseRole = UserRole::ViewOnly;
-    if (!fetchRoleInfo(roleKey, &baseRole, nullptr)) {
-        baseRole = baseRoleFromStorage(roleKey);
+    AccessPolicy policy = rolePolicyFor(roleKey);
+    applyUserOverrides(username, &policy);
+    return policy.canManageUsers;
+}
+
+bool MainWindow::isPermissionDeniedOpenError(const QString &errorText) const {
+    const QString normalized = errorText.trimmed().toLower();
+    if (normalized.isEmpty()) {
+        return false;
+    }
+    return normalized.contains("permission denied") ||
+           normalized.contains("access is denied") ||
+           normalized.contains("readonly") ||
+           normalized.contains("read-only") ||
+           normalized.contains("unable to open database file") ||
+           normalized.contains("authorization denied");
+}
+
+bool MainWindow::requestUacElevationForDatabase(const QString &dbPath, const QString &errorText) {
+#ifndef Q_OS_WIN
+    Q_UNUSED(dbPath);
+    Q_UNUSED(errorText);
+    return false;
+#else
+    const QString nativePath = QDir::toNativeSeparators(dbPath);
+
+    QMessageBox prompt(this);
+    prompt.setIcon(QMessageBox::Warning);
+    prompt.setWindowTitle("Database Permission Required");
+    prompt.setText(QString("Windows blocked database access:\n%1").arg(nativePath));
+    prompt.setInformativeText(
+        "You can relaunch once as Administrator (UAC prompt) or select another writable folder.");
+    if (!errorText.trimmed().isEmpty()) {
+        prompt.setDetailedText(errorText.trimmed());
+    }
+    QPushButton *runAsAdmin = prompt.addButton("Run as Administrator", QMessageBox::AcceptRole);
+    QPushButton *chooseFolder = prompt.addButton("Choose Another Folder", QMessageBox::ActionRole);
+    QPushButton *cancel = prompt.addButton(QMessageBox::Cancel);
+    prompt.exec();
+
+    if (prompt.clickedButton() == chooseFolder || prompt.clickedButton() == cancel) {
+        return false;
+    }
+    if (prompt.clickedButton() != runAsAdmin) {
+        return false;
     }
 
-    return baseRole == UserRole::FullAccess;
+    const QString executable = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
+    const QString parameters = quoteWindowsArgument("--db-path") + " " +
+                               quoteWindowsArgument(dbPath) + " " +
+                               quoteWindowsArgument("--uac-db-relaunch");
+
+    const HINSTANCE result = ShellExecuteW(
+        nullptr,
+        L"runas",
+        reinterpret_cast<LPCWSTR>(executable.utf16()),
+        reinterpret_cast<LPCWSTR>(parameters.utf16()),
+        nullptr,
+        SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) <= 32) {
+        appendRunLog(QString("UAC relaunch failed for %1 | shell result=%2")
+                         .arg(nativePath)
+                         .arg(reinterpret_cast<INT_PTR>(result)));
+        QMessageBox::warning(this,
+                             "Elevation Failed",
+                             "Unable to relaunch with Administrator privileges. "
+                             "Choose another writable database folder.");
+        return false;
+    }
+
+    m_relaunchingElevated = true;
+    appendRunLog(QString("UAC relaunch requested for database path: %1").arg(nativePath));
+    return true;
+#endif
 }
 
 bool MainWindow::promptAdminAuthorization(const QString &action, QString *commentOut, bool requireComment) {
-    Q_UNUSED(action);
-    Q_UNUSED(requireComment);
-    if (commentOut) {
-        commentOut->clear();
+    QDialog dialog(this);
+    dialog.setWindowTitle(QString("Authorization Required - %1").arg(action));
+    QFormLayout *form = new QFormLayout(&dialog);
+
+    QLineEdit *usernameField = new QLineEdit(&dialog);
+    usernameField->setText(m_currentUsername);
+    QLineEdit *passwordField = new QLineEdit(&dialog);
+    passwordField->setEchoMode(QLineEdit::Password);
+    QPlainTextEdit *reasonField = new QPlainTextEdit(&dialog);
+    reasonField->setPlaceholderText("Enter reason");
+    reasonField->setFixedHeight(90);
+
+    form->addRow("Admin Username", usernameField);
+    form->addRow("Admin Password", passwordField);
+    form->addRow("Reason", reasonField);
+
+    QLabel *errorLabel = new QLabel(&dialog);
+    errorLabel->setStyleSheet("color: #c62828;");
+    form->addRow(errorLabel);
+
+    QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText("Authorize");
+    form->addRow(buttons);
+
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, [&]() {
+        const QString username = normalizeUsername(usernameField->text());
+        const QString password = passwordField->text();
+        const QString comment = reasonField->toPlainText().trimmed();
+
+        if (username.isEmpty() || password.isEmpty()) {
+            errorLabel->setText("Admin credentials are required.");
+            return;
+        }
+        if (!verifyAdminCredentials(username, password)) {
+            errorLabel->setText("Invalid admin credentials.");
+            return;
+        }
+        if (requireComment && comment.size() < 20) {
+            errorLabel->setText("Reason must be at least 20 characters.");
+            return;
+        }
+
+        if (commentOut) {
+            *commentOut = comment;
+        }
+        dialog.accept();
+    });
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    const bool ok = (dialog.exec() == QDialog::Accepted);
+    if (!ok) {
+        logAction("AUTHORIZATION_DENIED",
+                  action,
+                  QString(),
+                  QString(),
+                  QStringLiteral("Authorization dialog canceled or failed"),
+                  "Security",
+                  "PERMISSION",
+                  false,
+                  "Authorization canceled or failed");
     }
-    return true;
+    return ok;
 }
 
 bool MainWindow::logAction(const QString &action,
                            const QString &entity,
                            const QString &oldValue,
                            const QString &newValue,
-                           const QString &comment) {
+                           const QString &comment,
+                           const QString &module,
+                           const QString &actionType,
+                           bool success,
+                           const QString &errorMessage,
+                           const QString &recordId) {
+    QString normalizedType = actionType.trimmed().toUpper();
+    if (normalizedType.isEmpty()) {
+        const QString upper = action.trimmed().toUpper();
+        if (upper.contains("CREATE") || upper.contains("ADD")) {
+            normalizedType = "CREATE";
+        } else if (upper.contains("UPDATE") || upper.contains("EDIT")) {
+            normalizedType = "EDIT";
+        } else if (upper.contains("DELETE")) {
+            normalizedType = "DELETE";
+        } else if (upper.contains("IMPORT")) {
+            normalizedType = "IMPORT";
+        } else if (upper.contains("EXPORT")) {
+            normalizedType = "EXPORT";
+        } else if (upper.contains("LOGIN")) {
+            normalizedType = "LOGIN";
+        } else if (upper.contains("PERMISSION") || upper.contains("ROLE") || upper.contains("USER")) {
+            normalizedType = "PERMISSION_CHANGE";
+        } else if (upper.contains("BACKUP") || upper.contains("RESTORE")) {
+            normalizedType = "BACKUP_RESTORE";
+        } else {
+            normalizedType = "ACTION";
+        }
+    }
+
     QSqlQuery q(m_db);
     q.prepare(
-        "INSERT INTO app_audit_log (timestamp, user, action, entity, old_value, new_value, comment) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)");
+        "INSERT INTO app_audit_log ("
+        "timestamp, user, user_id, role, machine_id, module_screen, action_type, action, entity, record_id, "
+        "old_value, new_value, comment, result, error_message"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     q.addBindValue(QDateTime::currentDateTime().toString(Qt::ISODate));
     q.addBindValue(m_currentUsername.isEmpty() ? QString("unknown") : m_currentUsername);
+    q.addBindValue(m_currentUserId);
+    q.addBindValue(m_currentRoleKey);
+    q.addBindValue(machineId());
+    q.addBindValue(module.trimmed().isEmpty() ? QStringLiteral("General") : module.trimmed());
+    q.addBindValue(normalizedType);
     q.addBindValue(action);
     q.addBindValue(entity);
+    q.addBindValue(recordId);
     q.addBindValue(oldValue);
     q.addBindValue(newValue);
     q.addBindValue(comment);
+    q.addBindValue(success ? QStringLiteral("SUCCESS") : QStringLiteral("FAIL"));
+    q.addBindValue(errorMessage);
     return q.exec();
+}
+
+bool MainWindow::applyRolePolicy(const QString &roleKey, AccessPolicy *policyOut) const {
+    if (!policyOut) {
+        return false;
+    }
+
+    UserRole baseRole = UserRole::ViewOnly;
+    QString displayName;
+    if (!fetchRoleInfo(roleKey, &baseRole, &displayName)) {
+        baseRole = baseRoleFromStorage(roleKey);
+    }
+    AccessPolicy policy = accessPolicyForBaseRole(baseRole);
+
+    QSqlQuery q(m_db);
+    q.prepare(
+        "SELECT "
+        "can_add, can_edit, can_delete, can_serial_edit, can_serial_delete, "
+        "can_print, can_manage_users, can_backup_restore, can_export "
+        "FROM app_roles WHERE role_key = ?");
+    q.addBindValue(roleKey);
+    if (q.exec() && q.next()) {
+        auto applyIfSet = [&](int idx, bool *field) {
+            if (!field || q.isNull(idx)) {
+                return;
+            }
+            *field = q.value(idx).toInt() != 0;
+        };
+        applyIfSet(0, &policy.canAdd);
+        applyIfSet(1, &policy.canEdit);
+        applyIfSet(2, &policy.canDelete);
+        applyIfSet(3, &policy.canSerialEdit);
+        applyIfSet(4, &policy.canSerialDelete);
+        applyIfSet(5, &policy.canPrint);
+        applyIfSet(6, &policy.canManageUsers);
+        applyIfSet(7, &policy.canBackupRestore);
+        applyIfSet(8, &policy.canExport);
+    }
+
+    *policyOut = policy;
+    return true;
+}
+
+MainWindow::AccessPolicy MainWindow::rolePolicyFor(const QString &roleKey) const {
+    AccessPolicy policy = accessPolicyForBaseRole(baseRoleFromStorage(roleKey));
+    applyRolePolicy(roleKey, &policy);
+    return policy;
+}
+
+bool MainWindow::applyUserOverrides(const QString &username, AccessPolicy *policy) const {
+    if (!policy) {
+        return false;
+    }
+    const QString normalizedUser = normalizeUsername(username);
+    if (normalizedUser.isEmpty()) {
+        return false;
+    }
+
+    QSqlQuery q(m_db);
+    q.prepare(
+        "SELECT "
+        "perm_add, perm_edit, perm_delete, perm_serial_edit, perm_serial_delete, "
+        "perm_print, perm_manage_users, perm_backup_restore, perm_export "
+        "FROM app_users WHERE username = ?");
+    q.addBindValue(normalizedUser);
+    if (!q.exec() || !q.next()) {
+        return false;
+    }
+
+    auto applyOverride = [&](int idx, bool *field) {
+        if (!field || q.isNull(idx)) {
+            return;
+        }
+        *field = q.value(idx).toInt() != 0;
+    };
+    applyOverride(0, &policy->canAdd);
+    applyOverride(1, &policy->canEdit);
+    applyOverride(2, &policy->canDelete);
+    applyOverride(3, &policy->canSerialEdit);
+    applyOverride(4, &policy->canSerialDelete);
+    applyOverride(5, &policy->canPrint);
+    applyOverride(6, &policy->canManageUsers);
+    applyOverride(7, &policy->canBackupRestore);
+    applyOverride(8, &policy->canExport);
+    return true;
+}
+
+bool MainWindow::upsertRolePermissions(const QString &roleKey, const AccessPolicy &policy) {
+    const QString key = normalizedText(roleKey);
+    if (key.isEmpty()) {
+        return false;
+    }
+
+    QSqlQuery update(m_db);
+    update.prepare(
+        "UPDATE app_roles SET "
+        "can_add = ?, can_edit = ?, can_delete = ?, can_serial_edit = ?, can_serial_delete = ?, "
+        "can_print = ?, can_manage_users = ?, can_backup_restore = ?, can_export = ? "
+        "WHERE role_key = ?");
+    update.addBindValue(policy.canAdd ? 1 : 0);
+    update.addBindValue(policy.canEdit ? 1 : 0);
+    update.addBindValue(policy.canDelete ? 1 : 0);
+    update.addBindValue(policy.canSerialEdit ? 1 : 0);
+    update.addBindValue(policy.canSerialDelete ? 1 : 0);
+    update.addBindValue(policy.canPrint ? 1 : 0);
+    update.addBindValue(policy.canManageUsers ? 1 : 0);
+    update.addBindValue(policy.canBackupRestore ? 1 : 0);
+    update.addBindValue(policy.canExport ? 1 : 0);
+    update.addBindValue(key);
+    return update.exec();
+}
+
+QString MainWindow::rolePolicySummary(const AccessPolicy &policy) const {
+    QJsonObject obj;
+    obj.insert("can_add", policy.canAdd);
+    obj.insert("can_edit", policy.canEdit);
+    obj.insert("can_delete", policy.canDelete);
+    obj.insert("can_serial_edit", policy.canSerialEdit);
+    obj.insert("can_serial_delete", policy.canSerialDelete);
+    obj.insert("can_print", policy.canPrint);
+    obj.insert("can_manage_users", policy.canManageUsers);
+    obj.insert("can_backup_restore", policy.canBackupRestore);
+    obj.insert("can_export", policy.canExport);
+    return QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+}
+
+bool MainWindow::hasPermissionOverride(const QString &username) const {
+    const QString normalizedUser = normalizeUsername(username);
+    if (normalizedUser.isEmpty()) {
+        return false;
+    }
+    QSqlQuery q(m_db);
+    q.prepare(
+        "SELECT "
+        "perm_add IS NOT NULL OR perm_edit IS NOT NULL OR perm_delete IS NOT NULL OR "
+        "perm_serial_edit IS NOT NULL OR perm_serial_delete IS NOT NULL OR perm_print IS NOT NULL OR "
+        "perm_manage_users IS NOT NULL OR perm_backup_restore IS NOT NULL OR perm_export IS NOT NULL "
+        "FROM app_users WHERE username = ?");
+    q.addBindValue(normalizedUser);
+    if (!q.exec() || !q.next()) {
+        return false;
+    }
+    return q.value(0).toInt() != 0;
+}
+
+bool MainWindow::upsertUserPermissionOverride(const QString &username, const AccessPolicy *policy) {
+    const QString normalizedUser = normalizeUsername(username);
+    if (normalizedUser.isEmpty()) {
+        return false;
+    }
+
+    QSqlQuery q(m_db);
+    q.prepare(
+        "UPDATE app_users SET "
+        "perm_add = ?, perm_edit = ?, perm_delete = ?, perm_serial_edit = ?, perm_serial_delete = ?, "
+        "perm_print = ?, perm_manage_users = ?, perm_backup_restore = ?, perm_export = ? "
+        "WHERE username = ?");
+
+    auto bindValue = [&](bool value) { q.addBindValue(value ? 1 : 0); };
+    auto bindNull = [&]() { q.addBindValue(QVariant()); };
+
+    if (policy) {
+        bindValue(policy->canAdd);
+        bindValue(policy->canEdit);
+        bindValue(policy->canDelete);
+        bindValue(policy->canSerialEdit);
+        bindValue(policy->canSerialDelete);
+        bindValue(policy->canPrint);
+        bindValue(policy->canManageUsers);
+        bindValue(policy->canBackupRestore);
+        bindValue(policy->canExport);
+    } else {
+        bindNull();
+        bindNull();
+        bindNull();
+        bindNull();
+        bindNull();
+        bindNull();
+        bindNull();
+        bindNull();
+        bindNull();
+    }
+    q.addBindValue(normalizedUser);
+    return q.exec();
+}
+
+QString MainWindow::machineId() const {
+    const QByteArray unique = QSysInfo::machineUniqueId();
+    if (!unique.isEmpty()) {
+        return QString::fromLatin1(unique.toHex());
+    }
+    return QSysInfo::machineHostName();
+}
+
+bool MainWindow::isStrongPassword(const QString &password, QString *reasonOut) const {
+    if (password.size() < 10) {
+        if (reasonOut) {
+            *reasonOut = "Password must be at least 10 characters.";
+        }
+        return false;
+    }
+    if (!password.contains(QRegularExpression("[A-Z]"))) {
+        if (reasonOut) {
+            *reasonOut = "Password must include an uppercase letter.";
+        }
+        return false;
+    }
+    if (!password.contains(QRegularExpression("[a-z]"))) {
+        if (reasonOut) {
+            *reasonOut = "Password must include a lowercase letter.";
+        }
+        return false;
+    }
+    if (!password.contains(QRegularExpression("\\d"))) {
+        if (reasonOut) {
+            *reasonOut = "Password must include a number.";
+        }
+        return false;
+    }
+    if (!password.contains(QRegularExpression("[^A-Za-z0-9]"))) {
+        if (reasonOut) {
+            *reasonOut = "Password must include a special character.";
+        }
+        return false;
+    }
+    return true;
+}
+
+QString MainWindow::configuredBackupRoot() const {
+    QSettings settings;
+    QString backupRoot = settings.value("backup/path").toString().trimmed();
+    if (backupRoot.isEmpty()) {
+        backupRoot = QDir(dataRootPath()).filePath("backups");
+    }
+    QDir dir(backupRoot);
+    if (!dir.exists()) {
+        dir.mkpath(".");
+    }
+    return dir.absolutePath();
+}
+
+QString MainWindow::automatedBackupFilePath(const QString &classification) const {
+    const QString stamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+    const QString fileName = QString("sku_backup_%1_%2.encdb")
+                                 .arg(classification.trimmed().isEmpty() ? "daily" : classification.trimmed().toLower(),
+                                      stamp);
+    return QDir(configuredBackupRoot()).filePath(fileName);
+}
+
+bool MainWindow::createEncryptedBackup(const QString &sourcePath,
+                                       const QString &targetPath,
+                                       QString *checksumOut,
+                                       qint64 *sizeOut,
+                                       QString *metadataOut,
+                                       QString *errorOut) {
+    // Read the live SQLite file into memory first so the encryption and verification
+    // stages operate on a stable byte sequence.
+    QFile source(sourcePath);
+    if (!source.open(QIODevice::ReadOnly)) {
+        if (errorOut) {
+            *errorOut = "Unable to read source database.";
+        }
+        return false;
+    }
+    const QByteArray plain = source.readAll();
+    source.close();
+    if (plain.isEmpty()) {
+        if (errorOut) {
+            *errorOut = "Source database is empty.";
+        }
+        return false;
+    }
+
+    const bool headerLooksValid = plain.startsWith("SQLite format 3");
+    int pageSize = 0;
+    if (plain.size() >= 18) {
+        const quint8 hi = static_cast<quint8>(plain.at(16));
+        const quint8 lo = static_cast<quint8>(plain.at(17));
+        pageSize = static_cast<int>((hi << 8) | lo);
+        if (pageSize == 1) {
+            pageSize = 65536;
+        }
+    }
+
+    QByteArray encrypted;
+    QByteArray verifyBytes;
+    QString method = "xor";
+    bool encryptedOk = false;
+
+#ifdef Q_OS_WIN
+    // Prefer DPAPI on Windows so backups stay machine/user protected without asking
+    // operators to manage an extra secret.
+    DATA_BLOB inBlob;
+    inBlob.pbData = reinterpret_cast<BYTE *>(const_cast<char *>(plain.constData()));
+    inBlob.cbData = static_cast<DWORD>(plain.size());
+    DATA_BLOB outBlob;
+    ZeroMemory(&outBlob, sizeof(outBlob));
+
+    if (CryptProtectData(&inBlob, L"WarehouseSkuBackup", nullptr, nullptr, nullptr, 0, &outBlob)) {
+        method = "dpapi";
+        encrypted = QByteArray(reinterpret_cast<const char *>(outBlob.pbData), static_cast<int>(outBlob.cbData));
+        LocalFree(outBlob.pbData);
+        encryptedOk = true;
+
+        DATA_BLOB decryptIn;
+        decryptIn.pbData = reinterpret_cast<BYTE *>(encrypted.data());
+        decryptIn.cbData = static_cast<DWORD>(encrypted.size());
+        DATA_BLOB decryptOut;
+        ZeroMemory(&decryptOut, sizeof(decryptOut));
+        if (CryptUnprotectData(&decryptIn, nullptr, nullptr, nullptr, nullptr, 0, &decryptOut)) {
+            verifyBytes = QByteArray(reinterpret_cast<const char *>(decryptOut.pbData), static_cast<int>(decryptOut.cbData));
+            LocalFree(decryptOut.pbData);
+        } else {
+            verifyBytes.clear();
+        }
+    }
+#endif
+
+    if (!encryptedOk) {
+        // Non-Windows builds (or DPAPI failures) fall back to a deterministic XOR
+        // stream derived from the machine identity. It is weaker than DPAPI but keeps
+        // the backup format reversible for restore and verification.
+        const QByteArray key = QCryptographicHash::hash((machineId() + "|warehouse-backup").toUtf8(),
+                                                        QCryptographicHash::Sha256);
+        encrypted = plain;
+        for (int i = 0; i < encrypted.size(); ++i) {
+            encrypted[i] = encrypted[i] ^ key.at(i % key.size());
+        }
+        verifyBytes = encrypted;
+        for (int i = 0; i < verifyBytes.size(); ++i) {
+            verifyBytes[i] = verifyBytes[i] ^ key.at(i % key.size());
+        }
+    }
+
+    if (verifyBytes.isEmpty() || !verifyBytes.startsWith("SQLite format 3")) {
+        if (errorOut) {
+            *errorOut = "Backup verification failed.";
+        }
+        return false;
+    }
+
+    QFile out(targetPath);
+    if (!out.open(QIODevice::WriteOnly)) {
+        if (errorOut) {
+            *errorOut = "Unable to write backup file.";
+        }
+        return false;
+    }
+    if (out.write(encrypted) != encrypted.size()) {
+        out.close();
+        if (errorOut) {
+            *errorOut = "Failed to write complete backup file.";
+        }
+        return false;
+    }
+    out.close();
+
+    const QString checksum = QString::fromLatin1(
+        QCryptographicHash::hash(encrypted, QCryptographicHash::Sha256).toHex());
+    if (checksumOut) {
+        *checksumOut = checksum;
+    }
+    if (sizeOut) {
+        *sizeOut = encrypted.size();
+    }
+
+    QJsonObject meta;
+    meta.insert("encryption_method", method);
+    meta.insert("source_size", static_cast<qint64>(plain.size()));
+    meta.insert("encrypted_size", static_cast<qint64>(encrypted.size()));
+    meta.insert("sqlite_header_valid", headerLooksValid);
+    if (pageSize > 0) {
+        meta.insert("page_size", pageSize);
+    }
+    meta.insert("restore_validation", verifyBytes.startsWith("SQLite format 3") ? "ok" : "failed");
+    if (metadataOut) {
+        *metadataOut = QString::fromUtf8(QJsonDocument(meta).toJson(QJsonDocument::Compact));
+    }
+    return true;
+}
+
+bool MainWindow::restoreEncryptedBackup(const QString &sourcePath,
+                                        const QString &targetPath,
+                                        QString *errorOut) {
+    QFile source(sourcePath);
+    if (!source.open(QIODevice::ReadOnly)) {
+        if (errorOut) {
+            *errorOut = "Unable to read encrypted backup file.";
+        }
+        return false;
+    }
+    const QByteArray encrypted = source.readAll();
+    source.close();
+    if (encrypted.isEmpty()) {
+        if (errorOut) {
+            *errorOut = "Encrypted backup is empty.";
+        }
+        return false;
+    }
+
+    QByteArray plain;
+    bool decrypted = false;
+
+#ifdef Q_OS_WIN
+    DATA_BLOB inBlob;
+    inBlob.pbData = reinterpret_cast<BYTE *>(const_cast<char *>(encrypted.constData()));
+    inBlob.cbData = static_cast<DWORD>(encrypted.size());
+    DATA_BLOB outBlob;
+    ZeroMemory(&outBlob, sizeof(outBlob));
+    if (CryptUnprotectData(&inBlob, nullptr, nullptr, nullptr, nullptr, 0, &outBlob)) {
+        plain = QByteArray(reinterpret_cast<const char *>(outBlob.pbData), static_cast<int>(outBlob.cbData));
+        LocalFree(outBlob.pbData);
+        decrypted = true;
+    }
+#endif
+
+    if (!decrypted) {
+        const QByteArray key = QCryptographicHash::hash((machineId() + "|warehouse-backup").toUtf8(),
+                                                        QCryptographicHash::Sha256);
+        plain = encrypted;
+        for (int i = 0; i < plain.size(); ++i) {
+            plain[i] = plain[i] ^ key.at(i % key.size());
+        }
+    }
+
+    if (!plain.startsWith("SQLite format 3")) {
+        if (errorOut) {
+            *errorOut = "Backup decryption failed. File may be corrupted or created on a different system.";
+        }
+        return false;
+    }
+
+    QFileInfo sourceInfo(sourcePath);
+    QFileInfo targetInfo(targetPath);
+    if (sourceInfo.exists() && targetInfo.exists()) {
+        const QString sourceCanonical = sourceInfo.canonicalFilePath();
+        const QString targetCanonical = targetInfo.canonicalFilePath();
+        if (!sourceCanonical.isEmpty() && !targetCanonical.isEmpty() && sourceCanonical == targetCanonical) {
+            if (errorOut) {
+                *errorOut = "Restore target cannot be the same as source backup file.";
+            }
+            return false;
+        }
+    }
+
+    const QString targetDir = QFileInfo(targetPath).absolutePath();
+    if (!targetDir.isEmpty()) {
+        QDir dir(targetDir);
+        if (!dir.exists() && !dir.mkpath(".")) {
+            if (errorOut) {
+                *errorOut = "Unable to create restore target directory.";
+            }
+            return false;
+        }
+    }
+
+    QFile out(targetPath);
+    if (out.exists()) {
+        QFile::remove(targetPath);
+    }
+    if (!out.open(QIODevice::WriteOnly)) {
+        if (errorOut) {
+            *errorOut = "Unable to write restored database file.";
+        }
+        return false;
+    }
+    if (out.write(plain) != plain.size()) {
+        out.close();
+        if (errorOut) {
+            *errorOut = "Failed to write complete restored database file.";
+        }
+        return false;
+    }
+    out.close();
+    return true;
 }
 
 int MainWindow::totalQuantityForSku(const QString &sku) const {
@@ -1074,7 +2761,7 @@ int MainWindow::totalQuantityForSku(const QString &sku) const {
         return 0;
     }
     QSqlQuery q(m_db);
-    q.prepare("SELECT COUNT(*) FROM barcode_log WHERE sku = ?");
+    q.prepare("SELECT COUNT(*) FROM barcode_log_active WHERE sku = ?");
     q.addBindValue(sku.trimmed().toUpper());
     if (q.exec() && q.next()) {
         return q.value(0).toInt();
@@ -1182,6 +2869,14 @@ void MainWindow::resetBarcodeFieldsForSkuChange() {
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
+    if (event->type() == QEvent::Resize && m_latestSkuScrollArea) {
+        if (watched == m_latestSkuScrollArea || watched == m_latestSkuScrollArea->viewport()) {
+            if (!m_refreshingLatestSkuCards) {
+                scheduleLatestSkuCardsRefresh(100);
+            }
+            return false;
+        }
+    }
     if (event->type() == QEvent::MouseButtonRelease) {
         auto *mouseEvent = static_cast<QMouseEvent *>(event);
         if (mouseEvent->button() == Qt::LeftButton) {
@@ -1207,99 +2902,237 @@ void MainWindow::setupUi() {
     ui = new Ui::MainWindow;
     ui->setupUi(this);
 
-    const QString darkTheme =
-        "QMainWindow { background-color: #0b0f14; color: #f7f9fc; }"
-        "QWidget { color: #f7f9fc; }"
-        "QGroupBox { background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #131c26, stop:1 #0f151e); "
-        "  border: 1px solid #1f2a3a; border-radius: 12px; margin-top: 18px; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #ff8f1f; font-weight: 700; }"
-        "QLineEdit, QPlainTextEdit, QSpinBox, QComboBox {"
-        "  background-color: #0e1621; border: 1px solid #2a3a4f; border-radius: 8px; padding: 7px; color: #f7f9fc;"
-        "  selection-background-color: #ff8f1f; selection-color: #0b0f14; }"
-        "QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus { border: 1px solid #22c8ff; }"
-        "QComboBox QAbstractItemView { background-color: #0e1621; selection-background-color: #22c8ff; }"
-        "QTableView { background-color: #0e1621; gridline-color: #1f2a3a; selection-background-color: #233349; selection-color: #ffffff; }"
-        "QTableView::item { padding: 5px; }"
-        "QHeaderView::section { background-color: #17212e; color: #f7f9fc; border: 1px solid #243246; padding: 7px; font-weight: 600; }"
-        "QTableCornerButton::section { background-color: #17212e; border: 1px solid #243246; }"
-        "QPushButton { background-color: #1b2736; border: 1px solid #31445c; border-radius: 8px; padding: 8px 14px; font-weight: 600; }"
-        "QPushButton:hover { background-color: #243449; border-color: #3e5874; }"
-        "QPushButton:pressed { background-color: #18212d; }"
-        "QPushButton:disabled { background-color: #1a2430; color: #7f8a97; border-color: #2a3a4f; }"
-        "QPushButton#dashboardSearchButton, QPushButton#searchButton, QPushButton#generateBarcodeButton, QPushButton#saveButton {"
-        "  background-color: #ff8f1f; color: #0b0f14; border: 1px solid #ffb765; }"
-        "QPushButton#dashboardSearchButton:hover, QPushButton#searchButton:hover, QPushButton#generateBarcodeButton:hover, QPushButton#saveButton:hover {"
-        "  background-color: #ffa648; border-color: #ffd19a; }"
-        "QTabWidget::pane { border: 1px solid #1f2a3a; }"
-        "QTabBar::tab { background: #111720; color: #cfd7e3; padding: 8px 14px; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 6px; border: 1px solid #1f2a3a; }"
-        "QTabBar::tab:selected { background: #ff8f1f; color: #0b0f14; }"
-        "QTabBar::tab:hover { background: #1b2634; color: #ffffff; }"
-        "QScrollArea { background-color: transparent; border: none; }"
-        "QScrollArea#latestSkuScrollArea { background-color: #0c1118; border: 1px solid #1f2a3a; border-radius: 12px; }"
-        "QWidget#latestSkuContainer { background-color: #0c1118; }"
-        "QScrollBar:vertical { background: #10161f; width: 12px; margin: 0px; }"
-        "QScrollBar::handle:vertical { background: #2a3a4f; border-radius: 6px; min-height: 22px; }"
-        "QScrollBar::handle:vertical:hover { background: #3b5270; }"
-        "QScrollBar:horizontal { background: #10161f; height: 12px; margin: 0px; }"
-        "QScrollBar::handle:horizontal { background: #2a3a4f; border-radius: 6px; min-width: 22px; }"
-        "QScrollBar::handle:horizontal:hover { background: #3b5270; }"
-        "QLabel#companyLogoLabel { background-color: #131a23; border: 1px solid #2a3647; border-radius: 10px; padding: 6px; }"
-        "QLabel#softwareNameLabel { color: #ff8f1f; font-size: 18px; font-weight: 700; }"
-        "QLabel#companyNameLabel { color: #f7f9fc; font-weight: 600; }"
-        "QLabel#authorLabel { color: #22c8ff; font-style: italic; }"
-        "QLabel#totalSkusValueLabel { color: #ff8f1f; font-size: 20px; font-weight: 700; }"
-        "QLabel#totalBarcodesValueLabel { color: #22c8ff; font-size: 20px; font-weight: 700; }"
-        "QLabel#quarterBarcodesValueLabel { color: #f7f9fc; font-size: 20px; font-weight: 700; }"
-        "QFrame#skuCard { background-color: #121a24; border: 1px solid #243246; border-radius: 12px; }"
-        "QFrame#skuCard:hover { border-color: #ff8f1f; }"
-        "QLabel#skuCardImage { background-color: #0e141d; border: 1px solid #2a3647; border-radius: 8px; }"
-        "QLabel#skuCardSku { color: #ffb765; font-weight: 700; font-size: 12px; }"
-        "QLabel#skuCardName { color: #f7f9fc; font-weight: 700; font-size: 18px; }"
-        "QLabel#skuCardMeta { color: #cfd7e3; font-weight: 600; font-size: 12px; }"
-        "QLabel#skuCardDate { color: #9fb0c6; font-size: 11px; }";
+    if (ui->centralwidget && ui->centralwidget->layout()) {
+        if (auto *mainLayout = qobject_cast<QVBoxLayout *>(ui->centralwidget->layout())) {
+            m_noDbBannerLabel = new QLabel(ui->centralwidget);
+            m_noDbBannerLabel->setObjectName("noDbBannerLabel");
+            m_noDbBannerLabel->setWordWrap(true);
+            m_noDbBannerLabel->setMinimumHeight(34);
+            m_noDbBannerLabel->setVisible(true);
+            mainLayout->insertWidget(0, m_noDbBannerLabel);
+        }
+    }
+
+    // ── DARK THEME ────────────────────────────────────────────────────────────
+    // Deep navy-charcoal base with warm orange accents. Clean, flat, modern.
+    // Palette: bg #111118 · surface #16161f · elevated #1e1e2b · border #2e2e42
+    //          text #e8e8f0 · muted #7878a0 · accent #ff7c38 · blue #4a8af7
+    const QString darkTheme = QStringLiteral(R"(
+QMainWindow { background-color: #111118; color: #e8e8f0; }
+QWidget { color: #e8e8f0; font-family: "Segoe UI", "Inter", sans-serif; font-size: 10pt; }
+QDialog { background-color: #16161f; color: #e8e8f0; }
+QGroupBox { background-color: #16161f; border: 1px solid #2e2e42; border-radius: 9px; margin-top: 20px; padding-top: 10px; }
+QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #ff7c38; font-weight: 600; font-size: 9pt; }
+QLineEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox { background-color: #1e1e2b; border: 1px solid #2e2e42; border-radius: 6px; padding: 6px 10px; color: #e8e8f0; selection-background-color: #ff7c38; selection-color: #111118; min-height: 16px; }
+QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border: 1.5px solid #4a8af7; background-color: #21212e; }
+QLineEdit:read-only { color: #7878a0; background-color: #16161f; }
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled { color: #44445a; background-color: #16161f; border-color: #22222e; }
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox QAbstractItemView, QListView { background-color: #1e1e2b; border: 1px solid #2e2e42; color: #e8e8f0; selection-background-color: #ff7c38; selection-color: #111118; padding: 2px; outline: none; }
+QTableView { background-color: #111118; alternate-background-color: #141420; gridline-color: #1c1c28; border: 1px solid #2e2e42; border-radius: 8px; color: #e8e8f0; }
+QTableView::item { padding: 5px 8px; color: #e8e8f0; }
+QTableView::item:hover { background-color: #1e1e2b; }
+QHeaderView::section, QTableCornerButton::section { background-color: #16161f; color: #7878a0; border: none; border-bottom: 1px solid #2e2e42; border-right: 1px solid #2e2e42; padding: 6px 8px; font-weight: 600; font-size: 9pt; }
+QHeaderView::section:last { border-right: none; }
+QPushButton { background-color: #1e1e2b; border: 1px solid #2e2e42; border-radius: 6px; padding: 7px 14px; font-weight: 600; color: #c8c8e0; min-height: 14px; }
+QPushButton:hover { background-color: #252538; border-color: #3e3e5a; color: #e8e8f0; }
+QPushButton:pressed { background-color: #16161f; border-color: #2e2e42; }
+QPushButton:disabled { background-color: #16161f; color: #38384e; border-color: #1e1e2b; }
+QPushButton#dashboardSearchButton, QPushButton#searchButton, QPushButton#generateBarcodeButton, QPushButton#saveButton, QPushButton#printBarcodeButton, QPushButton#backupDbButton, QPushButton#historyRefreshButton { background-color: #ff7c38; border: none; border-radius: 6px; color: #111118; font-weight: 700; }
+QPushButton#dashboardSearchButton:hover, QPushButton#searchButton:hover, QPushButton#generateBarcodeButton:hover, QPushButton#saveButton:hover, QPushButton#printBarcodeButton:hover, QPushButton#backupDbButton:hover, QPushButton#historyRefreshButton:hover { background-color: #ff9355; }
+QPushButton#dashboardSearchButton:pressed, QPushButton#searchButton:pressed, QPushButton#generateBarcodeButton:pressed, QPushButton#saveButton:pressed, QPushButton#printBarcodeButton:pressed, QPushButton#backupDbButton:pressed, QPushButton#historyRefreshButton:pressed { background-color: #d95e1c; }
+QPushButton#dashboardSearchButton:disabled, QPushButton#searchButton:disabled, QPushButton#generateBarcodeButton:disabled, QPushButton#saveButton:disabled, QPushButton#printBarcodeButton:disabled { background-color: #2e2010; color: #5a3a1a; border: none; }
+QPushButton#updateButton, QPushButton#fillFromSearchButton, QPushButton#historyEditButton, QPushButton#browseImageButton { background-color: #4a8af7; border: none; border-radius: 6px; color: #ffffff; font-weight: 700; }
+QPushButton#updateButton:hover, QPushButton#fillFromSearchButton:hover, QPushButton#historyEditButton:hover, QPushButton#browseImageButton:hover { background-color: #6aa1ff; }
+QPushButton#updateButton:pressed, QPushButton#fillFromSearchButton:pressed, QPushButton#historyEditButton:pressed, QPushButton#browseImageButton:pressed { background-color: #2e6cd4; }
+QPushButton#deleteSkuButton, QPushButton#deleteBarcodeButton, QPushButton#historyDeleteButton { background-color: #e84848; border: none; border-radius: 6px; color: #ffffff; font-weight: 700; }
+QPushButton#deleteSkuButton:hover, QPushButton#deleteBarcodeButton:hover, QPushButton#historyDeleteButton:hover { background-color: #f06060; }
+QPushButton#deleteSkuButton:pressed, QPushButton#deleteBarcodeButton:pressed, QPushButton#historyDeleteButton:pressed { background-color: #c02828; }
+QPushButton#clearSearchButton, QPushButton#clearFormButton, QPushButton#clearBarcodeFieldsButton, QPushButton#historyClearFieldsButton { background-color: transparent; border: 1px solid #2e2e42; color: #7878a0; }
+QPushButton#clearSearchButton:hover, QPushButton#clearFormButton:hover, QPushButton#clearBarcodeFieldsButton:hover, QPushButton#historyClearFieldsButton:hover { background-color: #1e1e2b; color: #c8c8e0; border-color: #3e3e5a; }
+QTabWidget::pane { border: 1px solid #2e2e42; border-radius: 9px; top: -1px; background: #16161f; }
+QTabBar::tab { background: transparent; color: #7878a0; padding: 8px 18px; border-top-left-radius: 7px; border-top-right-radius: 7px; margin-right: 2px; border: 1px solid transparent; font-weight: 600; font-size: 9.5pt; }
+QTabBar::tab:selected { background: #16161f; color: #ff7c38; border: 1px solid #2e2e42; border-bottom-color: #16161f; font-weight: 700; }
+QTabBar::tab:hover:!selected { background: #1a1a28; color: #c8c8e0; }
+QMenuBar { background-color: #111118; color: #e8e8f0; border-bottom: 1px solid #2e2e42; }
+QMenuBar::item { background: transparent; padding: 5px 10px; border-radius: 5px; }
+QMenuBar::item:selected { background: #1e1e2b; }
+QMenu { background-color: #16161f; color: #e8e8f0; border: 1px solid #2e2e42; border-radius: 8px; padding: 4px 0; }
+QMenu::item { padding: 6px 20px; border-radius: 4px; margin: 1px 4px; }
+QMenu::item:selected { background: #252538; }
+QMenu::separator { height: 1px; background: #2e2e42; margin: 4px 8px; }
+QStatusBar { background-color: #111118; border-top: 1px solid #2e2e42; color: #58587a; font-size: 9pt; }
+QToolTip { background-color: #252538; color: #e8e8f0; border: 1px solid #3e3e5a; border-radius: 5px; padding: 4px 8px; font-size: 9pt; }
+QScrollArea { background-color: transparent; border: none; }
+QScrollArea#latestSkuScrollArea { background-color: #111118; border: 1px solid #2e2e42; border-radius: 9px; }
+QWidget#latestSkuContainer { background-color: #111118; }
+QScrollBar:vertical { background: transparent; border: none; width: 8px; margin: 4px 2px; }
+QScrollBar:horizontal { background: transparent; border: none; height: 8px; margin: 2px 4px; }
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: #2e2e42; border-radius: 4px; min-height: 24px; min-width: 24px; }
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: #4a4a68; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QLabel#searchImagePreviewLabel, QLabel#barcodePreviewLabel, QLabel#barcodeSkuImageLabel, QLabel#historySkuImageLabel, QLabel#companyLogoLabel { background-color: #16161f; border: 1px solid #2e2e42; border-radius: 8px; padding: 4px; }
+QLabel#softwareNameLabel { color: #ff7c38; font-size: 18px; font-weight: 700; }
+QLabel#companyNameLabel { color: #e8e8f0; font-weight: 700; }
+QLabel#authorLabel { color: #4a8af7; font-style: italic; }
+QFrame#metricTile, QFrame#skuCard { background-color: #16161f; border: 1px solid #2e2e42; border-radius: 10px; }
+QFrame#skuCard:hover { border-color: #ff7c38; background-color: #1c1c2a; }
+QLabel#metricTileTitle { color: #7878a0; font-size: 9pt; font-weight: 600; }
+QLabel#totalSkusValueLabel, QLabel#totalBarcodesValueLabel, QLabel#quarterBarcodesValueLabel, QLabel#sdSerialsValueLabel, QLabel#skSerialsValueLabel, QLabel#smSerialsValueLabel { font-size: 20px; font-weight: 700; }
+QLabel#totalSkusValueLabel, QLabel#skuCardSku { color: #ff7c38; }
+QLabel#totalBarcodesValueLabel { color: #4a8af7; }
+QLabel#sdSerialsValueLabel { color: #44c492; }
+QLabel#skSerialsValueLabel { color: #ffaa55; }
+QLabel#smSerialsValueLabel { color: #f06060; }
+QLabel#skuCardImage { background-color: #111118; border: 1px solid #2e2e42; border-radius: 6px; }
+QLabel#skuCardName { color: #e8e8f0; font-weight: 600; }
+QLabel#skuCardMeta { color: #7878a0; }
+QLabel#skuCardDate { color: #44445a; }
+QLabel#searchNotFoundLabel { color: #44445a; font-size: 13px; font-weight: 600; background: transparent; }
+)");
     m_darkStyleSheet = darkTheme;
 
-    m_lightStyleSheet =
-        "QMainWindow { background-color: #f6f7fb; color: #1b1f24; }"
-        "QWidget { color: #1b1f24; }"
-        "QGroupBox { background-color: #ffffff; border: 1px solid #d7dce3; border-radius: 10px; margin-top: 18px; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #2b5fab; font-weight: 700; }"
-        "QLineEdit, QPlainTextEdit, QSpinBox, QComboBox {"
-        "  background-color: #ffffff; border: 1px solid #c5ccd6; border-radius: 6px; padding: 6px; }"
-        "QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus { border: 1px solid #2b5fab; }"
-        "QComboBox QAbstractItemView { background-color: #ffffff; selection-background-color: #dbe9ff; }"
-        "QTableView { background-color: #ffffff; gridline-color: #d7dce3; selection-background-color: #dbe9ff; selection-color: #1b1f24; }"
-        "QHeaderView::section { background-color: #eef2f7; color: #1b1f24; border: 1px solid #d7dce3; padding: 6px; font-weight: 600; }"
-        "QPushButton { background-color: #f0f3f7; border: 1px solid #c5ccd6; border-radius: 6px; padding: 6px 12px; font-weight: 600; }"
-        "QPushButton:hover { background-color: #e4e9f1; }"
-        "QPushButton:pressed { background-color: #d9e0ea; }"
-        "QPushButton#dashboardSearchButton, QPushButton#searchButton, QPushButton#generateBarcodeButton, QPushButton#saveButton {"
-        "  background-color: #2b5fab; color: #ffffff; border: 1px solid #3b6fc2; }"
-        "QPushButton#dashboardSearchButton:hover, QPushButton#searchButton:hover, QPushButton#generateBarcodeButton:hover, QPushButton#saveButton:hover {"
-        "  background-color: #3b6fc2; }"
-        "QTabWidget::pane { border: 1px solid #d7dce3; }"
-        "QTabBar::tab { background: #e9edf3; color: #1b1f24; padding: 8px 14px; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 6px; border: 1px solid #d7dce3; }"
-        "QTabBar::tab:selected { background: #2b5fab; color: #ffffff; }"
-        "QTabBar::tab:hover { background: #dfe6ef; }"
-        "QScrollBar:vertical { background: #f0f2f6; width: 12px; margin: 0px; }"
-        "QScrollBar::handle:vertical { background: #c9d1dc; border-radius: 6px; min-height: 22px; }"
-        "QScrollBar::handle:vertical:hover { background: #b2bccb; }"
-        "QScrollBar:horizontal { background: #f0f2f6; height: 12px; margin: 0px; }"
-        "QScrollBar::handle:horizontal { background: #c9d1dc; border-radius: 6px; min-width: 22px; }"
-        "QScrollBar::handle:horizontal:hover { background: #b2bccb; }"
-        "QFrame#skuCard { background-color: #ffffff; border: 1px solid #d7dce3; border-radius: 12px; }"
-        "QFrame#skuCard:hover { border-color: #2b5fab; }"
-        "QLabel#skuCardImage { background-color: #f4f6fb; border: 1px solid #d7dce3; border-radius: 8px; }"
-        "QLabel#skuCardSku { color: #2b5fab; font-weight: 700; font-size: 12px; }"
-        "QLabel#skuCardName { color: #1b1f24; font-weight: 700; font-size: 18px; }"
-        "QLabel#skuCardMeta { color: #4a5568; font-weight: 600; font-size: 12px; }"
-        "QLabel#skuCardDate { color: #6b7280; font-size: 11px; }";
+    // ── LIGHT THEME ───────────────────────────────────────────────────────────
+    // Soft white base with warm orange accents. Crisp, airy, professional.
+    // Palette: bg #f4f4fa · surface #ffffff · border #d4d4e8 · text #18182c
+    //          muted #5a5a80 · accent #dd6000 · blue #3b6ef0
+    m_lightStyleSheet = QStringLiteral(R"(
+QMainWindow { background-color: #f4f4fa; color: #18182c; }
+QWidget { color: #18182c; font-family: "Segoe UI", "Inter", sans-serif; font-size: 10pt; }
+QDialog { background-color: #ffffff; color: #18182c; }
+QGroupBox { background-color: #ffffff; border: 1px solid #d4d4e8; border-radius: 9px; margin-top: 20px; padding-top: 10px; }
+QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #dd6000; font-weight: 600; font-size: 9pt; }
+QLineEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox { background-color: #ffffff; border: 1px solid #d4d4e8; border-radius: 6px; padding: 6px 10px; color: #18182c; selection-background-color: #dd6000; selection-color: #ffffff; min-height: 16px; }
+QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border: 1.5px solid #3b6ef0; background-color: #fafafe; }
+QLineEdit:read-only { background-color: #f4f4fa; color: #5a5a80; }
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled { color: #aaaac0; background-color: #f0f0f8; border-color: #dcdcec; }
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox QAbstractItemView, QListView { background-color: #ffffff; border: 1px solid #d4d4e8; color: #18182c; selection-background-color: #dd6000; selection-color: #ffffff; padding: 2px; outline: none; }
+QTableView { background-color: #ffffff; alternate-background-color: #f8f8fd; gridline-color: #e8e8f4; border: 1px solid #d4d4e8; border-radius: 8px; color: #18182c; }
+QTableView::item { padding: 5px 8px; color: #18182c; }
+QTableView::item:hover { background-color: #f0f0f9; }
+QHeaderView::section, QTableCornerButton::section { background-color: #f4f4fa; color: #5a5a80; border: none; border-bottom: 1px solid #d4d4e8; border-right: 1px solid #d4d4e8; padding: 6px 8px; font-weight: 600; font-size: 9pt; }
+QHeaderView::section:last { border-right: none; }
+QPushButton { background-color: #ffffff; border: 1px solid #d4d4e8; border-radius: 6px; padding: 7px 14px; font-weight: 600; color: #18182c; min-height: 14px; }
+QPushButton:hover { background-color: #f0f0f9; border-color: #b4b4d0; }
+QPushButton:pressed { background-color: #e8e8f4; }
+QPushButton:disabled { background-color: #f4f4fa; color: #aaaac0; border-color: #dcdcec; }
+QPushButton#dashboardSearchButton, QPushButton#searchButton, QPushButton#generateBarcodeButton, QPushButton#saveButton, QPushButton#printBarcodeButton, QPushButton#backupDbButton, QPushButton#historyRefreshButton { background-color: #dd6000; border: none; border-radius: 6px; color: #ffffff; font-weight: 700; }
+QPushButton#dashboardSearchButton:hover, QPushButton#searchButton:hover, QPushButton#generateBarcodeButton:hover, QPushButton#saveButton:hover, QPushButton#printBarcodeButton:hover, QPushButton#backupDbButton:hover, QPushButton#historyRefreshButton:hover { background-color: #f07015; }
+QPushButton#dashboardSearchButton:pressed, QPushButton#searchButton:pressed, QPushButton#generateBarcodeButton:pressed, QPushButton#saveButton:pressed, QPushButton#printBarcodeButton:pressed, QPushButton#backupDbButton:pressed, QPushButton#historyRefreshButton:pressed { background-color: #b84c00; }
+QPushButton#dashboardSearchButton:disabled, QPushButton#searchButton:disabled, QPushButton#generateBarcodeButton:disabled, QPushButton#saveButton:disabled, QPushButton#printBarcodeButton:disabled { background-color: #f0e0d4; color: #c09878; border: none; }
+QPushButton#updateButton, QPushButton#fillFromSearchButton, QPushButton#historyEditButton, QPushButton#browseImageButton { background-color: #3b6ef0; border: none; border-radius: 6px; color: #ffffff; font-weight: 700; }
+QPushButton#updateButton:hover, QPushButton#fillFromSearchButton:hover, QPushButton#historyEditButton:hover, QPushButton#browseImageButton:hover { background-color: #5a88ff; }
+QPushButton#updateButton:pressed, QPushButton#fillFromSearchButton:pressed, QPushButton#historyEditButton:pressed, QPushButton#browseImageButton:pressed { background-color: #2350cc; }
+QPushButton#deleteSkuButton, QPushButton#deleteBarcodeButton, QPushButton#historyDeleteButton { background-color: #d43030; border: none; border-radius: 6px; color: #ffffff; font-weight: 700; }
+QPushButton#deleteSkuButton:hover, QPushButton#deleteBarcodeButton:hover, QPushButton#historyDeleteButton:hover { background-color: #e84848; }
+QPushButton#deleteSkuButton:pressed, QPushButton#deleteBarcodeButton:pressed, QPushButton#historyDeleteButton:pressed { background-color: #b01818; }
+QPushButton#clearSearchButton, QPushButton#clearFormButton, QPushButton#clearBarcodeFieldsButton, QPushButton#historyClearFieldsButton { background-color: transparent; border: 1px solid #d4d4e8; color: #7878a0; }
+QPushButton#clearSearchButton:hover, QPushButton#clearFormButton:hover, QPushButton#clearBarcodeFieldsButton:hover, QPushButton#historyClearFieldsButton:hover { background-color: #f0f0f9; color: #18182c; border-color: #b4b4d0; }
+QTabWidget::pane { border: 1px solid #d4d4e8; border-radius: 9px; top: -1px; background: #ffffff; }
+QTabBar::tab { background: transparent; color: #7878a0; padding: 8px 18px; border-top-left-radius: 7px; border-top-right-radius: 7px; margin-right: 2px; border: 1px solid transparent; font-weight: 600; font-size: 9.5pt; }
+QTabBar::tab:selected { background: #ffffff; color: #dd6000; border: 1px solid #d4d4e8; border-bottom-color: #ffffff; font-weight: 700; }
+QTabBar::tab:hover:!selected { background: #f0f0f9; color: #18182c; }
+QMenuBar { background-color: #f4f4fa; color: #18182c; border-bottom: 1px solid #d4d4e8; }
+QMenuBar::item { background: transparent; padding: 5px 10px; border-radius: 5px; }
+QMenuBar::item:selected { background: #e8e8f4; }
+QMenu { background-color: #ffffff; color: #18182c; border: 1px solid #d4d4e8; border-radius: 8px; padding: 4px 0; }
+QMenu::item { padding: 6px 20px; border-radius: 4px; margin: 1px 4px; }
+QMenu::item:selected { background: #f0f0f9; }
+QMenu::separator { height: 1px; background: #d4d4e8; margin: 4px 8px; }
+QStatusBar { background-color: #f4f4fa; border-top: 1px solid #d4d4e8; color: #9898b8; font-size: 9pt; }
+QToolTip { background-color: #ffffff; color: #18182c; border: 1px solid #d4d4e8; border-radius: 5px; padding: 4px 8px; font-size: 9pt; }
+QScrollArea { background-color: transparent; border: none; }
+QScrollArea#latestSkuScrollArea { background-color: #f4f4fa; border: 1px solid #d4d4e8; border-radius: 9px; }
+QWidget#latestSkuContainer { background-color: #f4f4fa; }
+QScrollBar:vertical { background: transparent; border: none; width: 8px; margin: 4px 2px; }
+QScrollBar:horizontal { background: transparent; border: none; height: 8px; margin: 2px 4px; }
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: #d4d4e8; border-radius: 4px; min-height: 24px; min-width: 24px; }
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: #aaaac8; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QLabel#searchImagePreviewLabel, QLabel#barcodePreviewLabel, QLabel#barcodeSkuImageLabel, QLabel#historySkuImageLabel, QLabel#companyLogoLabel { background-color: #f4f4fa; border: 1px solid #d4d4e8; border-radius: 8px; padding: 4px; }
+QLabel#softwareNameLabel { color: #dd6000; font-size: 18px; font-weight: 700; }
+QLabel#companyNameLabel { color: #18182c; font-weight: 700; }
+QLabel#authorLabel { color: #3b6ef0; font-style: italic; }
+QFrame#metricTile, QFrame#skuCard { background-color: #ffffff; border: 1px solid #d4d4e8; border-radius: 10px; }
+QFrame#skuCard:hover { border-color: #dd6000; background-color: #fffaf5; }
+QLabel#metricTileTitle { color: #7878a0; font-size: 9pt; font-weight: 600; }
+QLabel#totalSkusValueLabel, QLabel#totalBarcodesValueLabel, QLabel#quarterBarcodesValueLabel, QLabel#sdSerialsValueLabel, QLabel#skSerialsValueLabel, QLabel#smSerialsValueLabel { font-size: 20px; font-weight: 700; }
+QLabel#totalSkusValueLabel, QLabel#skuCardSku { color: #dd6000; }
+QLabel#totalBarcodesValueLabel { color: #3b6ef0; }
+QLabel#sdSerialsValueLabel { color: #1a9e6e; }
+QLabel#skSerialsValueLabel { color: #8c4a00; }
+QLabel#smSerialsValueLabel { color: #c02020; }
+QLabel#skuCardImage { background-color: #f4f4fa; border: 1px solid #d4d4e8; border-radius: 6px; }
+QLabel#skuCardName { color: #18182c; font-weight: 600; }
+QLabel#skuCardMeta { color: #7878a0; }
+QLabel#skuCardDate { color: #9898b8; }
+QLabel#searchNotFoundLabel { color: #9898b8; font-size: 13px; font-weight: 600; background: transparent; }
+)");
 
     m_mainTabs = ui->mainTabWidget;
+
     m_backupDbButton = ui->backupDbButton;
     m_totalSkusValueLabel = ui->totalSkusValueLabel;
     m_totalBarcodesValueLabel = ui->totalBarcodesValueLabel;
     m_quarterBarcodesValueLabel = ui->quarterBarcodesValueLabel;
+    if (ui->metricsGridLayout && ui->metricsGroupBox) {
+        while (QLayoutItem *item = ui->metricsGridLayout->takeAt(0)) {
+            if (item->widget()) {
+                item->widget()->deleteLater();
+            }
+            delete item;
+        }
+        ui->metricsGridLayout->setContentsMargins(10, 10, 10, 10);
+        ui->metricsGridLayout->setHorizontalSpacing(12);
+        ui->metricsGridLayout->setVerticalSpacing(10);
+        ui->metricsGridLayout->setColumnStretch(0, 1);
+        ui->metricsGridLayout->setColumnStretch(1, 1);
+
+        auto createMetricTile = [&](const QString &titleText, const QString &valueObjectName, QLabel **valueTarget) {
+            auto *tile = new QFrame(ui->metricsGroupBox);
+            tile->setObjectName("metricTile");
+            auto *tileLayout = new QVBoxLayout(tile);
+            tileLayout->setContentsMargins(12, 10, 12, 10);
+            tileLayout->setSpacing(4);
+
+            auto *titleLabel = new QLabel(titleText, tile);
+            titleLabel->setObjectName("metricTileTitle");
+
+            auto *valueLabel = new QLabel("0", tile);
+            valueLabel->setObjectName(valueObjectName);
+
+            tileLayout->addWidget(titleLabel);
+            tileLayout->addWidget(valueLabel);
+            tileLayout->addStretch(1);
+            if (valueTarget) {
+                *valueTarget = valueLabel;
+            }
+            return tile;
+        };
+
+        struct MetricTileDef {
+            QString title;
+            QString valueObjectName;
+            QLabel **target;
+        };
+
+        const MetricTileDef tiles[] = {
+            { "Total SKUs", "totalSkusValueLabel", &m_totalSkusValueLabel },
+            { "Total Serial Numbers", "totalBarcodesValueLabel", &m_totalBarcodesValueLabel },
+            { "This Quarter Incoming", "quarterBarcodesValueLabel", &m_quarterBarcodesValueLabel },
+            { "Skylark Drones Serials", "sdSerialsValueLabel", &m_sdSerialsValueLabel },
+            { "Skykart Serials", "skSerialsValueLabel", &m_skSerialsValueLabel },
+            { "Skylark Drones Manufacturing Pvt. Ltd. Serials", "smSerialsValueLabel", &m_smSerialsValueLabel }
+        };
+
+        for (int i = 0; i < 6; ++i) {
+            const int row = i / 2;
+            const int col = i % 2;
+            QFrame *tile = createMetricTile(tiles[i].title, tiles[i].valueObjectName, tiles[i].target);
+            ui->metricsGridLayout->addWidget(tile, row, col);
+        }
+    }
     m_companyLogoLabel = ui->companyLogoLabel;
     m_companyNameLabel = ui->companyNameLabel;
     m_softwareNameLabel = ui->softwareNameLabel;
@@ -1323,6 +3156,40 @@ void MainWindow::setupUi() {
     m_latestSkuScrollArea = ui->latestSkuScrollArea;
     m_latestSkuContainer = ui->latestSkuContainer;
     m_latestSkuGridLayout = ui->latestSkuGridLayout;
+    if (m_latestSkuScrollArea) {
+        m_latestSkuScrollArea->installEventFilter(this);
+        if (m_latestSkuScrollArea->viewport()) {
+            m_latestSkuScrollArea->viewport()->installEventFilter(this);
+        }
+        if (!m_latestSkuRefreshTimer) {
+            m_latestSkuRefreshTimer = new QTimer(this);
+            m_latestSkuRefreshTimer->setSingleShot(true);
+            connect(m_latestSkuRefreshTimer, &QTimer::timeout, this, &MainWindow::refreshLatestSkuCards);
+        }
+    }
+
+    if (ui->skuLeftLayout && ui->searchGroupBox && ui->searchImageGroupBox) {
+        ui->skuLeftLayout->removeWidget(ui->searchGroupBox);
+        ui->skuLeftLayout->removeWidget(ui->searchImageGroupBox);
+
+        auto *searchTopLayout = new QHBoxLayout();
+        searchTopLayout->setContentsMargins(0, 0, 0, 0);
+        searchTopLayout->setSpacing(8);
+
+        ui->searchImageGroupBox->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+        ui->searchImageGroupBox->setMinimumWidth(260);
+        ui->searchImageGroupBox->setMaximumWidth(300);
+
+        searchTopLayout->addWidget(ui->searchImageGroupBox, 0);
+        searchTopLayout->addWidget(ui->searchGroupBox, 1);
+        ui->skuLeftLayout->insertLayout(0, searchTopLayout);
+
+        const int tableIndex = ui->skuLeftLayout->indexOf(ui->resultsTableView);
+        if (tableIndex >= 0) {
+            ui->skuLeftLayout->setStretch(tableIndex, 1);
+        }
+    }
+
     m_searchQuantityWordsValueLabel = ui->searchQuantityWordsValueLabel;
 
     m_searchSku = ui->searchSkuLineEdit;
@@ -1343,9 +3210,35 @@ void MainWindow::setupUi() {
     m_resultsView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_resultsView->setContextMenuPolicy(Qt::CustomContextMenu);
 
+    // Overlay label shown when no search results are found.
+    m_searchNotFoundLabel = new QLabel("No SKU / part found.", m_resultsView->viewport());
+    m_searchNotFoundLabel->setObjectName("searchNotFoundLabel");
+    m_searchNotFoundLabel->setAlignment(Qt::AlignCenter);
+    m_searchNotFoundLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_searchNotFoundLabel->hide();
+
     m_statusLabel = ui->statusLabel;
-    m_statusLabel->setWordWrap(true);
-    m_statusLabel->setMinimumHeight(40);
+    if (m_statusLabel) {
+        m_statusLabel->setWordWrap(true);
+        m_statusLabel->hide();
+    }
+    if (ui->statusbar) {
+        m_statusBarMessageLabel = new QLabel(ui->statusbar);
+        m_statusBarMessageLabel->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+        m_statusBarMessageLabel->setText(QString());
+        m_statusBarMessageLabel->setStyleSheet("QLabel { padding-left: 4px; }");
+
+        m_statusBarVersionLabel = new QLabel(ui->statusbar);
+        m_statusBarVersionLabel->setAlignment(Qt::AlignVCenter | Qt::AlignRight);
+        const QString versionText = QCoreApplication::applicationVersion().trimmed().isEmpty()
+                                        ? AppGlobals::appVersion()
+                                        : QCoreApplication::applicationVersion().trimmed();
+        m_statusBarVersionLabel->setText(QString("Version: %1").arg(versionText));
+        m_statusBarVersionLabel->setStyleSheet("QLabel { color: #607d8b; padding-right: 6px; font-weight: 600; }");
+
+        ui->statusbar->addWidget(m_statusBarMessageLabel, 1);
+        ui->statusbar->addPermanentWidget(m_statusBarVersionLabel);
+    }
 
     m_imagePreview = ui->searchImagePreviewLabel;
     m_imagePreview->setFixedSize(220, 220);
@@ -1375,6 +3268,7 @@ void MainWindow::setupUi() {
     m_deleteSkuButton = ui->deleteSkuButton;
 
     m_barcodeSkuCombo = ui->barcodeSkuComboBox;
+    m_barcodePrefixCombo = ui->barcodePrefixComboBox;
     m_barcodeQuantityField = ui->barcodeQuantityLineEdit;
     m_barcodeNextSerialField = ui->barcodeNextSerialLineEdit;
     m_barcodeValueField = ui->barcodeValueLineEdit;
@@ -1391,6 +3285,7 @@ void MainWindow::setupUi() {
     m_barcodePartNumberValueLabel = ui->barcodePartNumberValueLabel;
     m_barcodeQuantityWordsValueLabel = ui->barcodeQuantityWordsValueLabel;
     m_barcodeSkuImageLabel = ui->barcodeSkuImageLabel;
+    m_barcodeSkuDetailsGroupBox = ui->barcodeSkuDetailsGroupBox;
 
     m_skuField->setReadOnly(false);
     m_skuField->setAlignment(Qt::AlignCenter);
@@ -1399,6 +3294,10 @@ void MainWindow::setupUi() {
     m_variationSpin->setRange(1, 35);
     m_descriptionEdit->setFixedHeight(60);
     m_commentsEdit->setFixedHeight(60);
+    if (m_dimensionsField) {
+        m_dimensionsField->setPlaceholderText("L cm x W cm x H cm");
+        m_dimensionsField->setToolTip("Format: 10 cm x 20 cm x 30 cm");
+    }
     if (m_imagePathField) {
         m_imagePathField->setReadOnly(true);
         m_imagePathField->setPlaceholderText("Stored in database");
@@ -1420,9 +3319,26 @@ void MainWindow::setupUi() {
     m_barcodePreview->setFixedSize(160, 160);
     m_barcodePreview->setFrameShape(QFrame::StyledPanel);
     m_barcodePreview->setAlignment(Qt::AlignCenter);
-    m_barcodeSkuImageLabel->setFixedSize(140, 140);
+    m_barcodeSkuImageLabel->setFixedSize(170, 170);
     m_barcodeSkuImageLabel->setFrameShape(QFrame::StyledPanel);
     m_barcodeSkuImageLabel->setAlignment(Qt::AlignCenter);
+    if (m_barcodeSkuDetailsGroupBox) {
+        m_barcodeSkuDetailsGroupBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+        m_barcodeSkuDetailsGroupBox->setMaximumHeight(230);
+
+        auto registerClickTarget = [this](QWidget *widget) {
+            if (!widget) {
+                return;
+            }
+            widget->installEventFilter(this);
+        };
+
+        registerClickTarget(m_barcodeSkuDetailsGroupBox);
+        const QList<QWidget *> clickTargets = m_barcodeSkuDetailsGroupBox->findChildren<QWidget *>();
+        for (QWidget *target : clickTargets) {
+            registerClickTarget(target);
+        }
+    }
     m_historySkuImageLabel->setFixedSize(180, 180);
     m_historySkuImageLabel->setFrameShape(QFrame::StyledPanel);
     m_historySkuImageLabel->setAlignment(Qt::AlignCenter);
@@ -1473,6 +3389,7 @@ void MainWindow::setupUi() {
     m_historyTableView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_historyTableView->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_historyTableView->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_historyTableView->setContextMenuPolicy(Qt::CustomContextMenu);
     m_historyTableView->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     m_historyTableView->horizontalHeader()->setStretchLastSection(true);
 
@@ -1510,6 +3427,17 @@ void MainWindow::setupUi() {
         if (yearIndex >= 0) {
             m_barcodeYearCombo->setCurrentIndex(yearIndex);
         }
+    }
+    if (m_barcodePrefixCombo) {
+        m_barcodePrefixCombo->clear();
+        m_barcodePrefixCombo->addItem("SD - Skylark Drones", "SD");
+        m_barcodePrefixCombo->addItem("SK - Skykart", "SK");
+        m_barcodePrefixCombo->addItem("SM - SDMPL (Skylark Drones Manufacturing Private Limited)", "SM");
+        const int prefixIndex = m_barcodePrefixCombo->findData("SK");
+        if (prefixIndex >= 0) {
+            m_barcodePrefixCombo->setCurrentIndex(prefixIndex);
+        }
+        m_barcodePrefixCombo->setToolTip("First two characters used in QR code values.");
     }
 
     const QString appDir = QCoreApplication::applicationDirPath();
@@ -1596,6 +3524,11 @@ void MainWindow::setupUi() {
     connect(m_clearSearchButton, &QPushButton::clicked, this, &MainWindow::clearSearch);
     connect(m_fillFromSearchButton, &QPushButton::clicked, this, &MainWindow::fillFormFromSearch);
 
+    // Live search: re-run on every keystroke so the table updates instantly.
+    connect(m_searchSku, &QLineEdit::textChanged, this, &MainWindow::searchRecords);
+    connect(m_searchPartNumber, &QLineEdit::textChanged, this, &MainWindow::searchRecords);
+    connect(m_searchPartName, &QLineEdit::textChanged, this, &MainWindow::searchRecords);
+
     connect(m_clearFormButton, &QPushButton::clicked, this, &MainWindow::clearFormFields);
     connect(m_saveButton, &QPushButton::clicked, this, &MainWindow::saveForm);
     connect(m_updateButton, &QPushButton::clicked, this, &MainWindow::updateSelected);
@@ -1663,45 +3596,79 @@ void MainWindow::setupUi() {
     }
     connect(m_historyTableView->selectionModel(), &QItemSelectionModel::currentRowChanged, this, &MainWindow::onHistoryTableSelectionChanged);
     connect(m_resultsView, &QTableView::customContextMenuRequested, this, &MainWindow::showResultsContextMenu);
+    connect(m_historyTableView, &QTableView::customContextMenuRequested, this, &MainWindow::showHistoryContextMenu);
     connect(m_mainTabs, &QTabWidget::currentChanged, this, &MainWindow::onTabChanged);
 
     createMenusAndToolbars();
+    registerUiInteractionLogging();
     m_printSettings.load();
-    applyTheme(Theme::Dark);
+    QSettings settings;
+    const QString savedTheme = settings.value(themePreferenceKey(), "dark").toString().trimmed().toLower();
+    Theme startupTheme = Theme::Dark;
+    if (savedTheme == "light") {
+        startupTheme = Theme::Light;
+    } else if (savedTheme == "system") {
+        startupTheme = Theme::System;
+    }
+    applyTheme(startupTheme);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
+    if (qApp && qApp->styleHints()) {
+        connect(qApp->styleHints(), &QStyleHints::colorSchemeChanged, this, [this]() {
+            if (m_currentTheme == Theme::System) {
+                applyTheme(Theme::System);
+            }
+        });
+    }
+#endif
+    updateNoDbBanner();
 }
 
 void MainWindow::createMenusAndToolbars() {
     QMenu *fileMenu = menuBar()->addMenu("&File");
     m_actionLoadDb = fileMenu->addAction("Load DB...");
+    m_actionRestoreBackup = fileMenu->addAction("Restore Backup...");
     m_actionExportDb = fileMenu->addAction("Export DB...");
     m_actionSaveDb = fileMenu->addAction("Save DB");
     fileMenu->addSeparator();
     m_actionExportSkuCsv = fileMenu->addAction("Export SKU Master (CSV)...");
     m_actionExportBarcodeSummaryCsv = fileMenu->addAction("Export QR Summary (CSV)...");
+    m_actionExportSerialsXls = fileMenu->addAction("Export All Generated Serial Numbers (Excel)...");
     fileMenu->addSeparator();
+    m_actionUninstall = fileMenu->addAction("Uninstall...");
     m_actionExit = fileMenu->addAction("Exit");
 
     QMenu *viewMenu = menuBar()->addMenu("&View");
     m_actionFullScreen = viewMenu->addAction("Full Screen");
     m_actionFullScreen->setCheckable(true);
-
     QMenu *themeMenu = viewMenu->addMenu("Theme");
-    QActionGroup *themeGroup = new QActionGroup(this);
-    themeGroup->setExclusive(true);
+    auto *themeActionGroup = new QActionGroup(this);
+    themeActionGroup->setExclusive(true);
     m_actionThemeDark = themeMenu->addAction("Dark");
-    m_actionThemeDark->setCheckable(true);
-    themeGroup->addAction(m_actionThemeDark);
     m_actionThemeLight = themeMenu->addAction("Light");
-    m_actionThemeLight->setCheckable(true);
-    themeGroup->addAction(m_actionThemeLight);
-    m_actionThemeSystem = themeMenu->addAction("System Default");
-    m_actionThemeSystem->setCheckable(true);
-    themeGroup->addAction(m_actionThemeSystem);
+    m_actionThemeSystem = themeMenu->addAction("System");
+    QAction *themeActions[] = { m_actionThemeDark, m_actionThemeLight, m_actionThemeSystem };
+    for (QAction *action : themeActions) {
+        if (!action) {
+            continue;
+        }
+        action->setCheckable(true);
+        themeActionGroup->addAction(action);
+    }
 
     QMenu *optionsMenu = menuBar()->addMenu("&Options");
     m_actionPrintSettings = optionsMenu->addAction("QR Code / Sticker Settings...");
 
+    QMenu *securityMenu = menuBar()->addMenu("&Security");
+    m_actionManageUsers = securityMenu->addAction("User Access Control...");
+    m_actionSwitchUser = securityMenu->addAction("Switch User...");
+    m_actionSettings = m_actionManageUsers;
+
+    QMenu *helpMenu = menuBar()->addMenu("&Help");
+    m_actionHelpGuides = helpMenu->addAction("User and Technical Guides...");
+    m_actionSkuReference = helpMenu->addAction("SKU Reference");
+
     connect(m_actionLoadDb, &QAction::triggered, this, &MainWindow::onLoadDbTriggered);
+    connect(m_actionRestoreBackup, &QAction::triggered, this, &MainWindow::onRestoreBackupTriggered);
     connect(m_actionExportDb, &QAction::triggered, this, &MainWindow::onExportDbTriggered);
     connect(m_actionSaveDb, &QAction::triggered, this, &MainWindow::onSaveDbTriggered);
     if (m_actionExportSkuCsv) {
@@ -1710,61 +3677,230 @@ void MainWindow::createMenusAndToolbars() {
     if (m_actionExportBarcodeSummaryCsv) {
         connect(m_actionExportBarcodeSummaryCsv, &QAction::triggered, this, &MainWindow::exportBarcodeSummaryCsv);
     }
+    if (m_actionExportSerialsXls) {
+        connect(m_actionExportSerialsXls, &QAction::triggered, this, &MainWindow::exportAllSerialsXls);
+    }
+    connect(m_actionUninstall, &QAction::triggered, this, &MainWindow::onUninstallTriggered);
     connect(m_actionExit, &QAction::triggered, this, &MainWindow::onExitTriggered);
     connect(m_actionFullScreen, &QAction::toggled, this, &MainWindow::onFullScreenToggled);
     connect(m_actionThemeDark, &QAction::triggered, this, &MainWindow::onThemeDark);
     connect(m_actionThemeLight, &QAction::triggered, this, &MainWindow::onThemeLight);
     connect(m_actionThemeSystem, &QAction::triggered, this, &MainWindow::onThemeSystem);
     connect(m_actionPrintSettings, &QAction::triggered, this, &MainWindow::onPrintSettingsTriggered);
+    connect(m_actionManageUsers, &QAction::triggered, this, &MainWindow::onManageUsersTriggered);
+    connect(m_actionSwitchUser, &QAction::triggered, this, &MainWindow::onSwitchUserTriggered);
+    connect(m_actionHelpGuides, &QAction::triggered, this, &MainWindow::onHelpGuidesTriggered);
+    connect(m_actionSkuReference, &QAction::triggered, this, &MainWindow::onSkuReferenceTriggered);
 }
 
-void MainWindow::applyTheme(Theme theme) {
-    m_currentTheme = theme;
-    if (theme == Theme::Dark) {
-        qApp->setStyleSheet(m_darkStyleSheet);
-    } else if (theme == Theme::Light) {
-        qApp->setStyleSheet(m_lightStyleSheet);
-    } else {
-        qApp->setStyleSheet(QString());
-    }
+void MainWindow::syncRunLogIdentity() {
+    setRunLogIdentity(m_currentUsername, m_currentUserId, m_currentRoleKey);
+}
 
-    if (m_resultsView) {
-        if (theme == Theme::Dark) {
-            m_resultsView->setStyleSheet(
-                "QTableView::item:selected { background: #324a6d; color: #ffffff; }"
-                "QTableView { selection-background-color: #324a6d; selection-color: #ffffff; }");
-        } else {
-            m_resultsView->setStyleSheet(QString());
+void MainWindow::appendRunLogWithUser(const QString &message) const {
+    const QString username = m_currentUsername.trimmed().isEmpty() ? QStringLiteral("anonymous")
+                                                                    : m_currentUsername.trimmed();
+    const QString userId = m_currentUserId.trimmed().isEmpty() ? QStringLiteral("-")
+                                                                : m_currentUserId.trimmed();
+    const QString role = m_currentRoleKey.trimmed().isEmpty() ? QStringLiteral("unknown")
+                                                               : m_currentRoleKey.trimmed();
+    QString module = QStringLiteral("General");
+    if (m_mainTabs) {
+        const int current = m_mainTabs->currentIndex();
+        if (current >= 0) {
+            const QString tabText = m_mainTabs->tabText(current).trimmed();
+            if (!tabText.isEmpty()) {
+                module = tabText;
+            }
         }
     }
 
+    appendRunLog(QString("user=%1 user_id=%2 role=%3 module=%4 | %5")
+                     .arg(username, userId, role, module, message.trimmed()));
+}
+
+void MainWindow::registerUiInteractionLogging() {
+    auto wireButton = [this](QPushButton *button, const QString &name) {
+        if (!button) {
+            return;
+        }
+        connect(button, &QPushButton::clicked, this, [this, button, name]() {
+            QString id = name.trimmed();
+            if (id.isEmpty()) {
+                id = button->objectName().trimmed();
+            }
+            QString label = button->text().trimmed();
+            label.replace("&", "");
+            appendRunLogWithUser(QString("pressed button=%1 label=\"%2\"").arg(id, label));
+        });
+    };
+
+    auto wireAction = [this](QAction *action, const QString &name) {
+        if (!action) {
+            return;
+        }
+        connect(action, &QAction::triggered, this, [this, action, name](bool checked) {
+            QString id = name.trimmed();
+            if (id.isEmpty()) {
+                id = action->objectName().trimmed();
+            }
+            QString label = action->text().trimmed();
+            label.replace("&", "");
+            QString detail = QString("triggered action=%1 label=\"%2\"").arg(id, label);
+            if (action->isCheckable()) {
+                detail += QString(" checked=%1").arg(checked ? "true" : "false");
+            }
+            appendRunLogWithUser(detail);
+        });
+    };
+
+    wireButton(m_backupDbButton, "backupDbButton");
+    wireButton(m_searchButton, "searchButton");
+    wireButton(m_clearSearchButton, "clearSearchButton");
+    wireButton(m_fillFromSearchButton, "fillFromSearchButton");
+    wireButton(m_clearFormButton, "clearFormButton");
+    wireButton(m_saveButton, "saveButton");
+    wireButton(m_updateButton, "updateButton");
+    wireButton(m_deleteSkuButton, "deleteSkuButton");
+    wireButton(m_browseImageButton, "browseImageButton");
+    wireButton(m_generateBarcodeButton, "generateBarcodeButton");
+    wireButton(m_clearBarcodeFieldsButton, "clearBarcodeFieldsButton");
+    wireButton(m_printBarcodeButton, "printBarcodeButton");
+    wireButton(m_deleteBarcodeButton, "deleteBarcodeButton");
+    wireButton(m_historyRefreshButton, "historyRefreshButton");
+    wireButton(m_historyEditButton, "historyEditButton");
+    wireButton(m_historyDeleteButton, "historyDeleteButton");
+    wireButton(m_historyClearFieldsButton, "historyClearFieldsButton");
+
+    wireAction(m_actionLoadDb, "actionLoadDb");
+    wireAction(m_actionRestoreBackup, "actionRestoreBackup");
+    wireAction(m_actionExportDb, "actionExportDb");
+    wireAction(m_actionSaveDb, "actionSaveDb");
+    wireAction(m_actionExportSkuCsv, "actionExportSkuCsv");
+    wireAction(m_actionExportBarcodeSummaryCsv, "actionExportBarcodeSummaryCsv");
+    wireAction(m_actionExportSerialsXls, "actionExportSerialsXls");
+    wireAction(m_actionUninstall, "actionUninstall");
+    wireAction(m_actionExit, "actionExit");
+    wireAction(m_actionFullScreen, "actionFullScreen");
+    wireAction(m_actionThemeDark, "actionThemeDark");
+    wireAction(m_actionThemeLight, "actionThemeLight");
+    wireAction(m_actionThemeSystem, "actionThemeSystem");
+    wireAction(m_actionPrintSettings, "actionPrintSettings");
+    wireAction(m_actionManageUsers, "actionManageUsers");
+    wireAction(m_actionSwitchUser, "actionSwitchUser");
+    wireAction(m_actionHelpGuides, "actionHelpGuides");
+    wireAction(m_actionSkuReference, "actionSkuReference");
+
+    if (m_mainTabs) {
+        connect(m_mainTabs, &QTabWidget::currentChanged, this, [this](int index) {
+            const QString tabName = (index >= 0) ? m_mainTabs->tabText(index).trimmed() : QString();
+            appendRunLogWithUser(QString("switched_tab index=%1 name=\"%2\"")
+                                     .arg(index)
+                                     .arg(tabName.isEmpty() ? QStringLiteral("unknown") : tabName));
+        });
+    }
+}
+
+void MainWindow::applyTheme(Theme theme) {
+    // "System" preserves the operator's preference while resolving to one of our
+    // two curated palettes at runtime.
+    const bool useDarkTheme = (theme == Theme::System) ? systemPrefersDarkTheme()
+                                                       : (theme == Theme::Dark);
+    m_currentTheme = theme;
+    qApp->setStyleSheet(useDarkTheme ? m_darkStyleSheet : m_lightStyleSheet);
+
+    const QString selectionStyle = tableSelectionStyleSheet(useDarkTheme);
+    if (m_resultsView) {
+        m_resultsView->setStyleSheet(selectionStyle);
+    }
+    if (m_historyTableView) {
+        m_historyTableView->setStyleSheet(selectionStyle);
+    }
+    if (m_barcodeTableView) {
+        m_barcodeTableView->setStyleSheet(selectionStyle);
+    }
+    if (m_skuField) {
+        m_skuField->setStyleSheet(highlightedSkuFieldStyle(useDarkTheme));
+    }
+    if (m_statusBarMessageLabel) {
+        m_statusBarMessageLabel->setStyleSheet("QLabel { padding-left: 4px; }");
+    }
+    if (m_statusBarVersionLabel) {
+        m_statusBarVersionLabel->setStyleSheet(versionLabelStyle(useDarkTheme));
+    }
+
+    QSettings settings;
+    QString themeValue = "dark";
+    if (theme == Theme::Light) {
+        themeValue = "light";
+    } else if (theme == Theme::System) {
+        themeValue = "system";
+    }
+    settings.setValue(themePreferenceKey(), themeValue);
+
     if (m_actionThemeDark) {
         m_actionThemeDark->setChecked(theme == Theme::Dark);
+        m_actionThemeDark->setEnabled(theme != Theme::Dark);
     }
     if (m_actionThemeLight) {
         m_actionThemeLight->setChecked(theme == Theme::Light);
+        m_actionThemeLight->setEnabled(theme != Theme::Light);
     }
     if (m_actionThemeSystem) {
         m_actionThemeSystem->setChecked(theme == Theme::System);
+        m_actionThemeSystem->setEnabled(theme != Theme::System);
     }
 }
 
 bool MainWindow::selectDatabaseOnStartup() {
     QSettings settings;
-    const QString savedPath = settings.value("db/path").toString().trimmed();
-    if (!savedPath.isEmpty()) {
-        if (openDatabaseAt(savedPath)) {
+    const QStringList args = QCoreApplication::arguments();
+    const QString startupDbPath = commandLineValue(args, "--db-path");
+    const bool suppressUacPrompt = hasCommandLineFlag(args, "--uac-db-relaunch");
+
+    // Startup path resolution is intentionally deterministic: explicit CLI override,
+    // then the last saved DB, and only then an interactive prompt.
+    if (!startupDbPath.isEmpty()) {
+        appendRunLog(QString("Startup override DB path requested: %1")
+                         .arg(QDir::toNativeSeparators(startupDbPath)));
+        if (openDatabaseAt(startupDbPath)) {
+            settings.setValue("db/path", startupDbPath);
             return true;
         }
+        if (!suppressUacPrompt &&
+            isPermissionDeniedOpenError(m_lastDatabaseOpenError) &&
+            requestUacElevationForDatabase(startupDbPath, m_lastDatabaseOpenError)) {
+            return false;
+        }
+    }
+
+    const QString savedPath = settings.value("db/path").toString().trimmed();
+    if (!savedPath.isEmpty()) {
+        if (QFileInfo::exists(savedPath)) {
+            if (openDatabaseAt(savedPath)) {
+                return true;
+            }
+            if (!suppressUacPrompt &&
+                isPermissionDeniedOpenError(m_lastDatabaseOpenError) &&
+                requestUacElevationForDatabase(savedPath, m_lastDatabaseOpenError)) {
+                return false;
+            }
+        } else {
+            appendRunLog(QString("Saved database path does not exist: %1")
+                             .arg(QDir::toNativeSeparators(savedPath)));
+        }
+
         settings.remove("db/path");
     }
 
     const QString startDir = dataDirPath();
     while (true) {
         QMessageBox prompt(this);
-        prompt.setWindowTitle("Select Database Folder");
-        prompt.setText("Choose the folder where the database should be stored.");
-        QPushButton *chooseButton = prompt.addButton("Choose Folder", QMessageBox::AcceptRole);
+        prompt.setWindowTitle("Database Setup");
+        prompt.setText("No database was found. Choose how to continue.");
+        prompt.setInformativeText("Create a new database now, skip for this session, or exit.");
+        QPushButton *createButton = prompt.addButton("Create New DB", QMessageBox::AcceptRole);
+        QPushButton *skipButton = prompt.addButton("Skip This Time", QMessageBox::ActionRole);
         QPushButton *exitButton = prompt.addButton("Exit", QMessageBox::RejectRole);
         prompt.exec();
 
@@ -1773,7 +3909,15 @@ bool MainWindow::selectDatabaseOnStartup() {
             return false;
         }
 
-        if (clicked == chooseButton) {
+        if (clicked == skipButton) {
+            settings.remove("db/path");
+            m_customDbPath.clear();
+            m_lastDatabaseOpenError.clear();
+            appendRunLog("Startup database setup skipped by user");
+            return true;
+        }
+
+        if (clicked == createButton) {
             const QString folder = QFileDialog::getExistingDirectory(
                 this,
                 "Select Database Folder",
@@ -1784,6 +3928,11 @@ bool MainWindow::selectDatabaseOnStartup() {
 
             const QString file = QDir(folder).filePath(AppGlobals::dbFileName());
             if (!openDatabaseAt(file)) {
+                if (!suppressUacPrompt &&
+                    isPermissionDeniedOpenError(m_lastDatabaseOpenError) &&
+                    requestUacElevationForDatabase(file, m_lastDatabaseOpenError)) {
+                    return false;
+                }
                 QMessageBox::warning(this,
                                      "Database Error",
                                      "Unable to create or open the database in the selected folder.\n\nCheck permissions and try again.");
@@ -1798,7 +3947,21 @@ bool MainWindow::selectDatabaseOnStartup() {
 
 bool MainWindow::openDatabaseAt(const QString &path) {
     const QString trimmed = path.trimmed();
+    m_lastDatabaseOpenError.clear();
     if (trimmed.isEmpty()) {
+        m_lastDatabaseOpenError = "Database path is empty.";
+        updateNoDbBanner();
+        return false;
+    }
+
+    const QFileInfo dbInfo(trimmed);
+    QDir dbDir(dbInfo.absolutePath());
+    if (!dbDir.exists() && !dbDir.mkpath(".")) {
+        m_lastDatabaseOpenError = QString("Failed to create database directory: %1")
+                                      .arg(QDir::toNativeSeparators(dbDir.absolutePath()));
+        setStatus(m_lastDatabaseOpenError, false);
+        appendRunLog(m_lastDatabaseOpenError);
+        updateNoDbBanner();
         return false;
     }
 
@@ -1806,6 +3969,8 @@ bool MainWindow::openDatabaseAt(const QString &path) {
         m_db.close();
     }
 
+    // Reuse a single named connection so reloads/backups do not leak duplicate
+    // SQLite handles inside the process.
     if (QSqlDatabase::contains("sku_connection")) {
         m_db = QSqlDatabase::database("sku_connection");
     } else {
@@ -1817,27 +3982,52 @@ bool MainWindow::openDatabaseAt(const QString &path) {
         const QString errorText = m_db.lastError().text().trimmed();
         const QString message = errorText.isEmpty() ? "Failed to open database."
                                                     : QString("Failed to open database: %1").arg(errorText);
+        m_lastDatabaseOpenError = errorText.isEmpty() ? message : errorText;
         setStatus(message, false);
+        appendRunLog(QString("openDatabaseAt failed for %1 | %2")
+                         .arg(QDir::toNativeSeparators(trimmed), m_lastDatabaseOpenError));
+        updateNoDbBanner();
         return false;
     }
 
     m_customDbPath = trimmed;
+    m_lastDatabaseOpenError.clear();
     QSettings settings;
     settings.setValue("db/path", trimmed);
 
     if (!ensureSchema()) {
+        m_lastDatabaseOpenError = "Database schema check failed.";
         setStatus("Database schema check failed.", false);
+        appendRunLog(QString("openDatabaseAt schema check failed for %1")
+                         .arg(QDir::toNativeSeparators(trimmed)));
+        updateNoDbBanner();
         return false;
     }
 
     if (!ensureDefaultRoles()) {
+        m_lastDatabaseOpenError = "Role setup failed.";
         setStatus("Role setup failed.", false);
+        appendRunLog(QString("openDatabaseAt role setup failed for %1")
+                         .arg(QDir::toNativeSeparators(trimmed)));
+        updateNoDbBanner();
+        return false;
+    }
+    if (!ensureInitialAdmin()) {
+        m_lastDatabaseOpenError = "Embedded developer account setup failed.";
+        setStatus("Embedded developer account setup failed.", false);
+        appendRunLog(QString("openDatabaseAt embedded developer account setup failed for %1")
+                         .arg(QDir::toNativeSeparators(trimmed)));
+        updateNoDbBanner();
         return false;
     }
     if (!loadRulesIfEmpty()) {
+        m_lastDatabaseOpenError = "Unable to load SKU rules.";
+        updateNoDbBanner();
         return false;
     }
     if (!loadCatalogIfEmpty()) {
+        m_lastDatabaseOpenError = "Unable to load catalog.";
+        updateNoDbBanner();
         return false;
     }
 
@@ -1847,8 +4037,24 @@ bool MainWindow::openDatabaseAt(const QString &path) {
     loadSkuList();
     loadHistorySkuList();
     updateDashboardMetrics();
+    scheduleAutomatedBackups();
+
+    if (!m_currentUsername.isEmpty()) {
+        m_currentUsername.clear();
+        m_currentUserId.clear();
+        m_currentUserFullName.clear();
+        applyAccessControl(AppGlobals::roleKeyView());
+        if (!promptLogin()) {
+            setStatus("Login required for loaded database.", false);
+            QTimer::singleShot(0, this, &QWidget::close);
+            updateNoDbBanner();
+            return false;
+        }
+    }
 
     setStatus(QString("Loaded database: %1").arg(QDir::toNativeSeparators(trimmed)), true);
+    appendRunLog(QString("openDatabaseAt succeeded for %1").arg(QDir::toNativeSeparators(trimmed)));
+    updateNoDbBanner();
     return true;
 }
 
@@ -1863,10 +4069,30 @@ bool MainWindow::backupDatabaseTo(const QString &targetPath) {
     const QString sourcePath = currentDatabasePath();
     if (sourcePath.isEmpty()) {
         setStatus("No database file to back up.", false);
+        logAction("BACKUP_MANUAL",
+                  targetPath,
+                  QString(),
+                  QString(),
+                  "No database file to back up",
+                  "Backup",
+                  "BACKUP_RESTORE",
+                  false,
+                  "No database file to back up",
+                  targetPath);
         return false;
     }
     if (!QFile::exists(sourcePath)) {
         setStatus("Database file not found.", false);
+        logAction("BACKUP_MANUAL",
+                  targetPath,
+                  QString(),
+                  QString(),
+                  "Database file not found",
+                  "Backup",
+                  "BACKUP_RESTORE",
+                  false,
+                  "Database file not found",
+                  targetPath);
         return false;
     }
 
@@ -1882,6 +4108,16 @@ bool MainWindow::backupDatabaseTo(const QString &targetPath) {
         const QString targetCanonical = targetInfo.canonicalFilePath();
         if (!sourceCanonical.isEmpty() && !targetCanonical.isEmpty() && sourceCanonical == targetCanonical) {
             setStatus("Backup target cannot be the same as the source database.", false);
+            logAction("BACKUP_MANUAL",
+                      target,
+                      QString(),
+                      QString(),
+                      "Backup target cannot be the same as source database",
+                      "Backup",
+                      "BACKUP_RESTORE",
+                      false,
+                      "Backup target cannot be same as source",
+                      target);
             return false;
         }
     }
@@ -1904,15 +4140,35 @@ bool MainWindow::backupDatabaseTo(const QString &targetPath) {
 
     if (!ok) {
         setStatus("Failed to back up the database.", false);
+        logAction("BACKUP_MANUAL",
+                  target,
+                  QString(),
+                  QString(),
+                  "Failed to copy database file",
+                  "Backup",
+                  "BACKUP_RESTORE",
+                  false,
+                  "Failed to copy database file",
+                  target);
         return false;
     }
 
     setStatus(QString("Database backup saved: %1").arg(QDir::toNativeSeparators(target)), true);
+    logAction("BACKUP_MANUAL",
+              target,
+              QString(),
+              target,
+              QString(),
+              "Backup",
+              "BACKUP_RESTORE",
+              true,
+              QString(),
+              target);
     return true;
 }
 
 QString MainWindow::defaultBackupPath() const {
-    const QString backupDir = QDir(dataRootPath()).filePath("backups");
+    const QString backupDir = configuredBackupRoot();
     QDir dir(backupDir);
     if (!dir.exists()) {
         dir.mkpath(".");
@@ -1921,20 +4177,448 @@ QString MainWindow::defaultBackupPath() const {
     return dir.filePath(QString("sku_backup_%1.db").arg(stamp));
 }
 
+bool MainWindow::pruneBackupRetention(const QString &backupRoot, QString *errorOut) {
+    QDir dir(backupRoot);
+    if (!dir.exists()) {
+        return true;
+    }
+
+    const QFileInfoList files = dir.entryInfoList(QStringList() << "*.encdb", QDir::Files, QDir::Time);
+    if (files.isEmpty()) {
+        return true;
+    }
+
+    const QDateTime now = QDateTime::currentDateTime();
+    QSet<QString> keepPaths;
+    QSet<QString> keptWeeks;
+    QSet<QString> keptMonths;
+    const QRegularExpression stampRegex("(\\d{8}_\\d{6})");
+
+    struct BackupItem {
+        QFileInfo fileInfo;
+        QDateTime stamp;
+    };
+    QList<BackupItem> items;
+    for (const QFileInfo &info : files) {
+        const QRegularExpressionMatch m = stampRegex.match(info.fileName());
+        if (!m.hasMatch()) {
+            continue;
+        }
+        const QDateTime stamp = QDateTime::fromString(m.captured(1), "yyyyMMdd_HHmmss");
+        if (!stamp.isValid()) {
+            continue;
+        }
+        items.append({info, stamp});
+    }
+    std::sort(items.begin(), items.end(), [](const BackupItem &a, const BackupItem &b) {
+        return a.stamp > b.stamp;
+    });
+
+    for (const BackupItem &item : items) {
+        const int ageDays = item.stamp.date().daysTo(now.date());
+        const QString absolutePath = item.fileInfo.absoluteFilePath();
+        if (ageDays <= 30) {
+            keepPaths.insert(absolutePath);
+            continue;
+        }
+
+        int isoYear = 0;
+        const int week = item.stamp.date().weekNumber(&isoYear);
+        const QString weekKey = QString("%1-W%2")
+                                    .arg(isoYear)
+                                    .arg(week, 2, 10, QLatin1Char('0'));
+        const QString monthKey = item.stamp.date().toString("yyyy-MM");
+
+        bool keep = false;
+        if (!keptWeeks.contains(weekKey)) {
+            keptWeeks.insert(weekKey);
+            keep = true;
+        }
+        if (!keptMonths.contains(monthKey)) {
+            keptMonths.insert(monthKey);
+            keep = true;
+        }
+        if (keep) {
+            keepPaths.insert(absolutePath);
+        }
+    }
+
+    for (const BackupItem &item : items) {
+        const QString absolutePath = item.fileInfo.absoluteFilePath();
+        if (keepPaths.contains(absolutePath)) {
+            continue;
+        }
+        if (!QFile::remove(absolutePath)) {
+            if (errorOut) {
+                *errorOut = QString("Failed to prune old backup: %1").arg(absolutePath);
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
+bool MainWindow::shouldRunBootFallback() const {
+    QSqlQuery q(m_db);
+    q.prepare("SELECT value FROM app_meta WHERE key = 'backup_last_success_date'");
+    if (!q.exec() || !q.next()) {
+        return true;
+    }
+    const QString stored = q.value(0).toString().trimmed();
+    if (stored.isEmpty()) {
+        return true;
+    }
+    const QDate lastDate = QDate::fromString(stored, Qt::ISODate);
+    if (!lastDate.isValid()) {
+        return true;
+    }
+
+    const QDate today = QDate::currentDate();
+    if (lastDate < today.addDays(-1)) {
+        return true;
+    }
+    if (lastDate < today && QTime::currentTime() > QTime(19, 30)) {
+        return true;
+    }
+    return false;
+}
+
+bool MainWindow::runAutomatedBackup(const QString &trigger, bool silent) {
+    // Backups run against the database file path rather than the open SQLite handle so
+    // scheduled jobs keep working even when no operator has the backup screen open.
+    const QString sourcePath = currentDatabasePath();
+    if (sourcePath.isEmpty() || !QFile::exists(sourcePath)) {
+        const QString msg = "Automated backup skipped: source database unavailable.";
+        if (!silent) {
+            setStatus(msg, false);
+        }
+        logAction("AUTO_BACKUP",
+                  trigger,
+                  QString(),
+                  QString(),
+                  msg,
+                  "Backup",
+                  "BACKUP_RESTORE",
+                  false,
+                  msg,
+                  sourcePath);
+        return false;
+    }
+
+    QString classification = "daily";
+    const QDate today = QDate::currentDate();
+    if (today.day() == 1) {
+        classification = "monthly";
+    } else if (today.dayOfWeek() == 7) {
+        classification = "weekly";
+    }
+
+    const QString backupPath = automatedBackupFilePath(classification);
+    const bool wasOpen = m_db.isOpen();
+    if (wasOpen) {
+        m_db.close();
+    }
+
+    QString checksum;
+    qint64 fileSize = 0;
+    QString metadata;
+    QString error;
+    const bool ok = createEncryptedBackup(sourcePath, backupPath, &checksum, &fileSize, &metadata, &error);
+
+    if (wasOpen) {
+        m_db.setDatabaseName(sourcePath);
+        m_db.open();
+    }
+
+    QSqlQuery history(m_db);
+    history.prepare(
+        "INSERT INTO app_backup_history (timestamp, trigger_type, backup_path, checksum, file_size, metadata, result, error_message) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    history.addBindValue(QDateTime::currentDateTime().toString(Qt::ISODate));
+    history.addBindValue(trigger);
+    history.addBindValue(backupPath);
+    history.addBindValue(checksum);
+    history.addBindValue(fileSize);
+    history.addBindValue(metadata);
+    history.addBindValue(ok ? "SUCCESS" : "FAIL");
+    history.addBindValue(error);
+    history.exec();
+
+    QSqlQuery setMeta(m_db);
+    setMeta.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)");
+    setMeta.addBindValue("backup_last_attempt_ts");
+    setMeta.addBindValue(QDateTime::currentDateTime().toString(Qt::ISODate));
+    setMeta.exec();
+
+    if (ok) {
+        setMeta.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)");
+        setMeta.addBindValue("backup_last_success_ts");
+        setMeta.addBindValue(QDateTime::currentDateTime().toString(Qt::ISODate));
+        setMeta.exec();
+
+        setMeta.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)");
+        setMeta.addBindValue("backup_last_success_date");
+        setMeta.addBindValue(QDate::currentDate().toString(Qt::ISODate));
+        setMeta.exec();
+
+        QString retentionError;
+        if (!pruneBackupRetention(configuredBackupRoot(), &retentionError)) {
+            appendRunLog(retentionError);
+        }
+    }
+
+    if (!silent) {
+        if (ok) {
+            setStatus(QString("Automated backup saved: %1").arg(QDir::toNativeSeparators(backupPath)), true);
+        } else {
+            setStatus(QString("Automated backup failed: %1").arg(error), false);
+        }
+    }
+
+    logAction("AUTO_BACKUP",
+              trigger,
+              QString(),
+              backupPath,
+              ok ? QString() : error,
+              "Backup",
+              "BACKUP_RESTORE",
+              ok,
+              error,
+              backupPath);
+    return ok;
+}
+
+void MainWindow::scheduleNextBackupTick() {
+    if (!m_autoBackupTimer) {
+        return;
+    }
+    QDateTime next = QDateTime(QDate::currentDate().addDays(1), QTime(17, 30));
+    qint64 msecs = QDateTime::currentDateTime().msecsTo(next);
+    if (msecs < 1000) {
+        msecs = 1000;
+    }
+    if (msecs > 24ll * 60ll * 60ll * 1000ll) {
+        msecs = 24ll * 60ll * 60ll * 1000ll;
+    }
+    m_autoBackupTimer->start(static_cast<int>(msecs));
+}
+
+void MainWindow::evaluateAutomatedBackupWindow() {
+    if (!m_db.isOpen()) {
+        scheduleNextBackupTick();
+        return;
+    }
+
+    if (shouldRunBootFallback()) {
+        runAutomatedBackup("boot_fallback", true);
+    }
+
+    QSqlQuery readMeta(m_db);
+    readMeta.prepare("SELECT value FROM app_meta WHERE key = 'backup_last_success_date'");
+    QString lastDateValue;
+    if (readMeta.exec() && readMeta.next()) {
+        lastDateValue = readMeta.value(0).toString();
+    }
+    const QDate today = QDate::currentDate();
+    const QDate lastDate = QDate::fromString(lastDateValue, Qt::ISODate);
+    if (lastDate.isValid() && lastDate == today) {
+        scheduleNextBackupTick();
+        return;
+    }
+
+    QString scheduleDateValue;
+    int scheduleOffset = -1;
+    readMeta.prepare("SELECT value FROM app_meta WHERE key = 'backup_schedule_date'");
+    if (readMeta.exec() && readMeta.next()) {
+        scheduleDateValue = readMeta.value(0).toString();
+    }
+    readMeta.prepare("SELECT value FROM app_meta WHERE key = 'backup_schedule_offset_min'");
+    if (readMeta.exec() && readMeta.next()) {
+        scheduleOffset = readMeta.value(0).toInt();
+    }
+
+    if (scheduleDateValue != today.toString(Qt::ISODate) || scheduleOffset < 0 || scheduleOffset > 120) {
+        scheduleOffset = QRandomGenerator::global()->bounded(121);
+        QSqlQuery setMeta(m_db);
+        setMeta.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)");
+        setMeta.addBindValue("backup_schedule_date");
+        setMeta.addBindValue(today.toString(Qt::ISODate));
+        setMeta.exec();
+        setMeta.prepare("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)");
+        setMeta.addBindValue("backup_schedule_offset_min");
+        setMeta.addBindValue(QString::number(scheduleOffset));
+        setMeta.exec();
+    }
+
+    const QDateTime windowStart(today, QTime(17, 30));
+    const QDateTime scheduleAt = windowStart.addSecs(scheduleOffset * 60);
+    const QDateTime windowEnd(today, QTime(19, 30));
+    const QDateTime now = QDateTime::currentDateTime();
+
+    if (now < scheduleAt) {
+        qint64 waitMs = now.msecsTo(scheduleAt);
+        if (waitMs < 1000) {
+            waitMs = 1000;
+        }
+        m_autoBackupTimer->start(static_cast<int>(waitMs));
+        return;
+    }
+    if (now >= scheduleAt && now <= windowEnd) {
+        runAutomatedBackup("daily_window", true);
+        scheduleNextBackupTick();
+        return;
+    }
+    if (now > windowEnd) {
+        runAutomatedBackup("missed_window_fallback", true);
+        scheduleNextBackupTick();
+        return;
+    }
+    scheduleNextBackupTick();
+}
+
+void MainWindow::scheduleAutomatedBackups() {
+    if (!m_autoBackupTimer) {
+        m_autoBackupTimer = new QTimer(this);
+        m_autoBackupTimer->setSingleShot(true);
+        connect(m_autoBackupTimer, &QTimer::timeout, this, &MainWindow::evaluateAutomatedBackupWindow);
+    }
+    evaluateAutomatedBackupWindow();
+}
+
+void MainWindow::runEncryptedRestoreFlow(const QString &sourcePath, bool startupWithoutDb) {
+    if (sourcePath.trimmed().isEmpty()) {
+        return;
+    }
+
+    QString suggested = defaultBackupPath();
+    if (!suggested.endsWith(".db", Qt::CaseInsensitive)) {
+        suggested += ".db";
+    }
+    QString restoredPath = QFileDialog::getSaveFileName(
+        this,
+        "Restore Encrypted Backup As",
+        suggested,
+        "SQLite Database (*.db *.sqlite *.sqlite3);;All Files (*.*)");
+    if (restoredPath.isEmpty()) {
+        return;
+    }
+    if (QFileInfo(restoredPath).suffix().isEmpty()) {
+        restoredPath += ".db";
+    }
+
+    QString restoreError;
+    if (!restoreEncryptedBackup(sourcePath, restoredPath, &restoreError)) {
+        const QString message = restoreError.isEmpty() ? QString("Failed to restore encrypted backup.")
+                                                       : restoreError;
+        setStatus(message, false);
+        logAction("DB_RESTORE",
+                  sourcePath,
+                  QString(),
+                  restoredPath,
+                  message,
+                  "Backup",
+                  "BACKUP_RESTORE",
+                  false,
+                  message,
+                  sourcePath);
+        return;
+    }
+
+    const bool restoredOpen = openDatabaseAt(restoredPath);
+    bool ready = restoredOpen;
+    QString failure;
+    if (restoredOpen && startupWithoutDb && m_currentUsername.trimmed().isEmpty()) {
+        if (!promptLogin()) {
+            ready = false;
+            failure = QString("Login required for loaded database.");
+            setStatus(failure, false);
+            QTimer::singleShot(0, this, &QWidget::close);
+        }
+    } else if (!restoredOpen) {
+        failure = QString("Failed to open restored database.");
+    }
+
+    logAction("DB_RESTORE",
+              sourcePath,
+              QString(),
+              restoredPath,
+              failure,
+              "Backup",
+              "BACKUP_RESTORE",
+              ready,
+              ready ? QString() : (m_lastDatabaseOpenError.isEmpty() ? failure : m_lastDatabaseOpenError),
+              sourcePath);
+}
+
 void MainWindow::onLoadDbTriggered() {
+    const bool startupWithoutDb = !m_db.isOpen() && m_currentUsername.trimmed().isEmpty();
+    if (!startupWithoutDb &&
+        !requireAccess(m_access.canBackupRestore, "You don't have permission to load or restore databases.")) {
+        return;
+    }
+
     const QString startDir = QFileInfo(currentDatabasePath()).absolutePath();
     const QString file = QFileDialog::getOpenFileName(
         this,
         "Load Database",
         startDir,
-        "SQLite Database (*.db *.sqlite *.sqlite3);;All Files (*.*)");
+        "Database Files (*.db *.sqlite *.sqlite3 *.encdb);;SQLite Database (*.db *.sqlite *.sqlite3);;Encrypted Backup (*.encdb);;All Files (*.*)");
     if (file.isEmpty()) {
         return;
     }
-    openDatabaseAt(file);
+
+    const QString suffix = QFileInfo(file).suffix().trimmed().toLower();
+    if (suffix == "encdb") {
+        runEncryptedRestoreFlow(file, startupWithoutDb);
+        return;
+    }
+
+    const bool ok = openDatabaseAt(file);
+    bool ready = ok;
+    if (ok && startupWithoutDb && m_currentUsername.trimmed().isEmpty()) {
+        if (!promptLogin()) {
+            ready = false;
+            setStatus("Login required for loaded database.", false);
+            QTimer::singleShot(0, this, &QWidget::close);
+        }
+    }
+
+    logAction("DB_LOAD",
+              file,
+              QString(),
+              file,
+              ready ? QString() : QString("Failed to load database"),
+              "Backup",
+              "BACKUP_RESTORE",
+              ready,
+              ready ? QString() : QString("Failed to load database"),
+              file);
+}
+
+void MainWindow::onRestoreBackupTriggered() {
+    if (!requireAccess(m_access.canBackupRestore, "You don't have permission to restore database backups.")) {
+        return;
+    }
+
+    const QString startDir = QFileInfo(currentDatabasePath()).absolutePath();
+    const QString file = QFileDialog::getOpenFileName(
+        this,
+        "Select Encrypted Backup",
+        startDir,
+        "Encrypted Backup (*.encdb);;All Files (*.*)");
+    if (file.isEmpty()) {
+        return;
+    }
+
+    const bool startupWithoutDb = !m_db.isOpen() && m_currentUsername.trimmed().isEmpty();
+    runEncryptedRestoreFlow(file, startupWithoutDb);
 }
 
 void MainWindow::onExportDbTriggered() {
+    if (!requireAccess(m_access.canBackupRestore, "You don't have permission to export or back up databases.")) {
+        return;
+    }
+
     const QString suggested = defaultBackupPath();
     const QString file = QFileDialog::getSaveFileName(
         this,
@@ -1948,6 +4632,10 @@ void MainWindow::onExportDbTriggered() {
 }
 
 void MainWindow::exportSkuMasterCsv() {
+    if (!requireAccess(m_access.canExport, "You don't have permission to export data.")) {
+        return;
+    }
+
     const QString stamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
     QDir exportDir(dataDirPath());
     if (!exportDir.exists()) {
@@ -1982,19 +4670,15 @@ void MainWindow::exportSkuMasterCsv() {
 
     QTextStream out(&file);
     out.setEncoding(QStringConverter::Utf8);
-    out << "SI No,SKU,Part Number,Part Name,Category,Sub Category,Item Serial,Variation,Description,Storage,Rack Number,Bin Number,Dimensions,Weight Value,Weight Unit,Product Family,Image Path,Comments,Created At\n";
+    out << "SKU,Part Name\n";
 
     QSqlQuery q(m_db);
-    q.prepare(
-        "SELECT si_no, sku, part_number, part_name, category_code, sub_category, item_serial, unique_variation, "
-        "description, storage, rack_number, bin_number, dimensions, weight_value, weight_unit, "
-        "product_family, image_path, comments, created_at "
-        "FROM sku_catalog ORDER BY sku");
+    q.prepare("SELECT sku, part_name FROM sku_catalog_active ORDER BY sku");
     if (q.exec()) {
         while (q.next()) {
             QStringList cells;
-            cells.reserve(19);
-            for (int i = 0; i < 19; ++i) {
+            cells.reserve(2);
+            for (int i = 0; i < 2; ++i) {
                 cells << escapeCsvField(q.value(i).toString());
             }
             out << cells.join(',') << '\n';
@@ -2007,10 +4691,19 @@ void MainWindow::exportSkuMasterCsv() {
               "SKU_MASTER",
               QString(),
               targetPath,
-              QString());
+              QString(),
+              "Export",
+              "EXPORT",
+              true,
+              QString(),
+              targetPath);
 }
 
 void MainWindow::exportBarcodeSummaryCsv() {
+    if (!requireAccess(m_access.canExport, "You don't have permission to export data.")) {
+        return;
+    }
+
     const QString stamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
     QDir exportDir(dataDirPath());
     if (!exportDir.exists()) {
@@ -2050,8 +4743,8 @@ void MainWindow::exportBarcodeSummaryCsv() {
     QSqlQuery q(m_db);
     q.prepare(
         "SELECT b.sku, s.part_name, b.year, b.quarter, COUNT(*) "
-        "FROM barcode_log b "
-        "LEFT JOIN sku_catalog s ON s.sku = b.sku "
+        "FROM barcode_log_active b "
+        "LEFT JOIN sku_catalog_active s ON s.sku = b.sku "
         "GROUP BY b.sku, b.year, b.quarter "
         "ORDER BY b.sku, b.year, b.quarter");
     if (q.exec()) {
@@ -2077,16 +4770,428 @@ void MainWindow::exportBarcodeSummaryCsv() {
               "BARCODE_SUMMARY",
               QString(),
               targetPath,
-              QString());
+              QString(),
+              "Export",
+              "EXPORT",
+              true,
+              QString(),
+              targetPath);
+}
+
+// ---------------------------------------------------------------------------
+// Excel (SpreadsheetML) export — all generated serial numbers grouped by SKU.
+// SpreadsheetML is plain XML; Excel opens it natively with a .xls extension
+// so no third-party library is required.
+// ---------------------------------------------------------------------------
+void MainWindow::exportAllSerialsXls() {
+    if (!requireAccess(m_access.canExport, "You don't have permission to export data.")) {
+        return;
+    }
+    if (!m_db.isOpen()) {
+        setStatus("No database open.", false);
+        return;
+    }
+
+    const QString stamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+    QDir exportDir(dataDirPath());
+    if (!exportDir.exists()) {
+        exportDir.mkpath(".");
+    }
+    const QString defaultName = exportDir.filePath(QString("serial_numbers_%1.xls").arg(stamp));
+    const QString chosen = QFileDialog::getSaveFileName(
+        this,
+        "Export All Generated Serial Numbers",
+        defaultName,
+        "Excel Workbook (*.xls);;All Files (*.*)");
+    if (chosen.isEmpty()) {
+        return;
+    }
+
+    // Ensure timestamp in filename to avoid silent overwrites.
+    QString targetPath = chosen;
+    {
+        const QRegularExpression stampPattern("\\d{8}_\\d{6}");
+        if (!targetPath.contains(stampPattern)) {
+            QFileInfo info(chosen);
+            QString suffix = info.suffix();
+            if (suffix.isEmpty()) { suffix = "xls"; }
+            targetPath = info.dir().filePath(
+                QString("%1_%2.%3").arg(info.completeBaseName(), stamp, suffix));
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Fetch all serials joined to their SKU master record, ordered by SKU then
+    // year / quarter / serial so the sheet reads chronologically within each SKU.
+    // -----------------------------------------------------------------------
+    struct SerialRow {
+        QString sku, partName, partNumber, category, subCategory;
+        QString description, storage, rackNo, binNo;
+        int     serial = 0;
+        QString barcode, quarter, year, generatedAt;
+    };
+    QList<SerialRow> rows;
+
+    QSqlQuery q(m_db);
+    q.prepare(
+        "SELECT "
+        "  COALESCE(s.sku, b.sku)         AS sku, "
+        "  COALESCE(s.part_name,  '')      AS part_name, "
+        "  COALESCE(s.part_number,'')      AS part_number, "
+        "  COALESCE(s.category_code,'')    AS category, "
+        "  COALESCE(s.sub_category,'')     AS sub_category, "
+        "  COALESCE(s.description,'')      AS description, "
+        "  COALESCE(s.storage,'')          AS storage, "
+        "  COALESCE(s.rack_number,'')      AS rack_no, "
+        "  COALESCE(s.bin_number,'')       AS bin_no, "
+        "  b.serial, "
+        "  b.barcode, "
+        "  b.quarter, "
+        "  b.year, "
+        "  b.created_at "
+        "FROM barcode_log_active b "
+        "LEFT JOIN sku_catalog_active s ON s.sku = b.sku "
+        "ORDER BY COALESCE(s.sku, b.sku), b.year, b.quarter, b.serial");
+
+    if (!q.exec()) {
+        setStatus("Failed to query serial numbers.", false);
+        return;
+    }
+    while (q.next()) {
+        SerialRow r;
+        r.sku         = q.value(0).toString().trimmed().toUpper();
+        r.partName    = q.value(1).toString().trimmed();
+        r.partNumber  = q.value(2).toString().trimmed();
+        r.category    = q.value(3).toString().trimmed();
+        r.subCategory = q.value(4).toString().trimmed();
+        r.description = q.value(5).toString().trimmed();
+        r.storage     = q.value(6).toString().trimmed();
+        r.rackNo      = q.value(7).toString().trimmed();
+        r.binNo       = q.value(8).toString().trimmed();
+        r.serial      = q.value(9).toInt();
+        r.barcode     = q.value(10).toString().trimmed();
+        r.quarter     = QString("Q%1").arg(q.value(11).toInt());
+        r.year        = q.value(12).toString().trimmed();
+        r.generatedAt = q.value(13).toString().trimmed();
+        rows.append(r);
+    }
+
+    if (rows.isEmpty()) {
+        setStatus("No serial numbers found to export.", false);
+        return;
+    }
+
+    // -----------------------------------------------------------------------
+    // Build the SpreadsheetML XML document.
+    // -----------------------------------------------------------------------
+    auto xmlCell = [](const QString &styleId, const QString &type, const QString &value) -> QString {
+        const QString escaped = QString(value)
+            .replace("&",  "&amp;")
+            .replace("<",  "&lt;")
+            .replace(">",  "&gt;")
+            .replace("\"", "&quot;");
+        if (styleId.isEmpty()) {
+            return QString("   <Cell><Data ss:Type=\"%1\">%2</Data></Cell>\n").arg(type, escaped);
+        }
+        return QString("   <Cell ss:StyleID=\"%1\"><Data ss:Type=\"%2\">%3</Data></Cell>\n")
+            .arg(styleId, type, escaped);
+    };
+    auto numCell = [](const QString &styleId, int value) -> QString {
+        if (styleId.isEmpty()) {
+            return QString("   <Cell><Data ss:Type=\"Number\">%1</Data></Cell>\n").arg(value);
+        }
+        return QString("   <Cell ss:StyleID=\"%1\"><Data ss:Type=\"Number\">%2</Data></Cell>\n")
+            .arg(styleId).arg(value);
+    };
+
+    QString xml;
+    xml.reserve(512 * 1024);
+
+    // Header
+    xml += "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+           "<?mso-application progid=\"Excel.Sheet\"?>\n"
+           "<Workbook xmlns=\"urn:schemas-microsoft-com:office:spreadsheet\"\n"
+           " xmlns:o=\"urn:schemas-microsoft-com:office:office\"\n"
+           " xmlns:x=\"urn:schemas-microsoft-com:office:excel\"\n"
+           " xmlns:ss=\"urn:schemas-microsoft-com:office:spreadsheet\">\n";
+
+    // Styles
+    xml +=
+        " <Styles>\n"
+        "  <Style ss:ID=\"Default\" ss:Name=\"Normal\"/>\n"
+        // Column header row — amber background, white bold text
+        "  <Style ss:ID=\"hdr\">\n"
+        "   <Font ss:Bold=\"1\" ss:Color=\"#FFFFFF\" ss:Size=\"10\"/>\n"
+        "   <Interior ss:Color=\"#C05E02\" ss:Pattern=\"Solid\"/>\n"
+        "   <Alignment ss:Horizontal=\"Center\" ss:Vertical=\"Center\" ss:WrapText=\"1\"/>\n"
+        "   <Borders><Border ss:Position=\"Bottom\" ss:LineStyle=\"Continuous\" ss:Weight=\"2\" ss:Color=\"#7A3700\"/></Borders>\n"
+        "  </Style>\n"
+        // SKU group header row — light amber, dark bold text
+        "  <Style ss:ID=\"sku\">\n"
+        "   <Font ss:Bold=\"1\" ss:Color=\"#1C2128\" ss:Size=\"10\"/>\n"
+        "   <Interior ss:Color=\"#FFA657\" ss:Pattern=\"Solid\"/>\n"
+        "   <Borders><Border ss:Position=\"Bottom\" ss:LineStyle=\"Continuous\" ss:Weight=\"1\" ss:Color=\"#C05E02\"/></Borders>\n"
+        "  </Style>\n"
+        // Even serial row — very light steel
+        "  <Style ss:ID=\"even\">\n"
+        "   <Interior ss:Color=\"#F6F8FA\" ss:Pattern=\"Solid\"/>\n"
+        "  </Style>\n"
+        // Odd serial row — white
+        "  <Style ss:ID=\"odd\">\n"
+        "   <Interior ss:Color=\"#FFFFFF\" ss:Pattern=\"Solid\"/>\n"
+        "  </Style>\n"
+        // Serial number cell — bold
+        "  <Style ss:ID=\"even_ser\">\n"
+        "   <Font ss:Bold=\"1\"/>\n"
+        "   <Interior ss:Color=\"#F6F8FA\" ss:Pattern=\"Solid\"/>\n"
+        "   <Alignment ss:Horizontal=\"Center\"/>\n"
+        "  </Style>\n"
+        "  <Style ss:ID=\"odd_ser\">\n"
+        "   <Font ss:Bold=\"1\"/>\n"
+        "   <Interior ss:Color=\"#FFFFFF\" ss:Pattern=\"Solid\"/>\n"
+        "   <Alignment ss:Horizontal=\"Center\"/>\n"
+        "  </Style>\n"
+        " </Styles>\n";
+
+    // Worksheet — "All Serials"
+    xml += " <Worksheet ss:Name=\"All Serials\">\n";
+    xml += "  <Table ss:DefaultRowHeight=\"15\">\n";
+    // Column widths (matches header order below)
+    xml += "   <Column ss:Width=\"80\"/>\n";   // SKU
+    xml += "   <Column ss:Width=\"140\"/>\n";  // Part Name
+    xml += "   <Column ss:Width=\"110\"/>\n";  // Part Number
+    xml += "   <Column ss:Width=\"80\"/>\n";   // Category
+    xml += "   <Column ss:Width=\"100\"/>\n";  // Sub-Category
+    xml += "   <Column ss:Width=\"180\"/>\n";  // Description
+    xml += "   <Column ss:Width=\"100\"/>\n";  // Storage
+    xml += "   <Column ss:Width=\"70\"/>\n";   // Rack No.
+    xml += "   <Column ss:Width=\"70\"/>\n";   // Bin No.
+    xml += "   <Column ss:Width=\"60\"/>\n";   // Serial #
+    xml += "   <Column ss:Width=\"220\"/>\n";  // QR Code
+    xml += "   <Column ss:Width=\"60\"/>\n";   // Quarter
+    xml += "   <Column ss:Width=\"55\"/>\n";   // Year
+    xml += "   <Column ss:Width=\"140\"/>\n";  // Generated At
+
+    // --- Column header row ---
+    xml += "  <Row ss:AutoFitHeight=\"1\">\n";
+    const QStringList headers = {
+        "SKU", "Part Name", "Part Number", "Category", "Sub-Category",
+        "Description", "Storage", "Rack No.", "Bin No.",
+        "Serial #", "QR Code", "Quarter", "Year", "Generated At"
+    };
+    for (const QString &h : headers) {
+        xml += xmlCell("hdr", "String", h);
+    }
+    xml += "  </Row>\n";
+
+    // --- Data rows, grouped by SKU ---
+    QString lastSku;
+    int rowIndex = 0; // used to alternate row colours within a SKU group
+    for (const SerialRow &r : rows) {
+        // SKU group header whenever SKU changes
+        if (r.sku != lastSku) {
+            lastSku  = r.sku;
+            rowIndex = 0;
+            xml += "  <Row ss:AutoFitHeight=\"1\">\n";
+            xml += xmlCell("sku", "String", r.sku);
+            xml += xmlCell("sku", "String", r.partName);
+            xml += xmlCell("sku", "String", r.partNumber);
+            xml += xmlCell("sku", "String", r.category);
+            xml += xmlCell("sku", "String", r.subCategory);
+            xml += xmlCell("sku", "String", r.description);
+            xml += xmlCell("sku", "String", r.storage);
+            xml += xmlCell("sku", "String", r.rackNo);
+            xml += xmlCell("sku", "String", r.binNo);
+            xml += xmlCell("sku", "String", "");  // serial placeholder
+            xml += xmlCell("sku", "String", "");  // barcode placeholder
+            xml += xmlCell("sku", "String", "");
+            xml += xmlCell("sku", "String", "");
+            xml += xmlCell("sku", "String", "");
+            xml += "  </Row>\n";
+        }
+
+        // Serial detail row
+        const bool even = (rowIndex % 2 == 0);
+        const QString rowStyle    = even ? "even"    : "odd";
+        const QString serialStyle = even ? "even_ser" : "odd_ser";
+        ++rowIndex;
+
+        xml += "  <Row ss:AutoFitHeight=\"1\">\n";
+        xml += xmlCell(rowStyle, "String", r.sku);
+        xml += xmlCell(rowStyle, "String", r.partName);
+        xml += xmlCell(rowStyle, "String", r.partNumber);
+        xml += xmlCell(rowStyle, "String", r.category);
+        xml += xmlCell(rowStyle, "String", r.subCategory);
+        xml += xmlCell(rowStyle, "String", r.description);
+        xml += xmlCell(rowStyle, "String", r.storage);
+        xml += xmlCell(rowStyle, "String", r.rackNo);
+        xml += xmlCell(rowStyle, "String", r.binNo);
+        xml += numCell(serialStyle, r.serial);
+        xml += xmlCell(rowStyle, "String", r.barcode);
+        xml += xmlCell(rowStyle, "String", r.quarter);
+        xml += xmlCell(rowStyle, "String", r.year);
+        xml += xmlCell(rowStyle, "String", r.generatedAt);
+        xml += "  </Row>\n";
+    }
+
+    xml += "  </Table>\n";
+    // Freeze the header row
+    xml +=
+        "  <WorksheetOptions xmlns=\"urn:schemas-microsoft-com:office:excel\">\n"
+        "   <Selected/>\n"
+        "   <FreezePanes/>\n"
+        "   <FrozenNoSplit/>\n"
+        "   <SplitHorizontal>1</SplitHorizontal>\n"
+        "   <TopRowBottomPane>1</TopRowBottomPane>\n"
+        "   <ActivePane>2</ActivePane>\n"
+        "  </WorksheetOptions>\n";
+    xml += " </Worksheet>\n";
+
+    // ---- Summary sheet: one row per SKU with total serial count ----
+    xml += " <Worksheet ss:Name=\"Summary\">\n";
+    xml += "  <Table>\n";
+    xml += "   <Column ss:Width=\"80\"/>\n";
+    xml += "   <Column ss:Width=\"140\"/>\n";
+    xml += "   <Column ss:Width=\"110\"/>\n";
+    xml += "   <Column ss:Width=\"100\"/>\n";
+    xml += "   <Column ss:Width=\"100\"/>\n";
+    xml += "   <Column ss:Width=\"70\"/>\n";
+    xml += "   <Column ss:Width=\"70\"/>\n";
+    xml += "   <Column ss:Width=\"80\"/>\n";
+
+    // Header
+    xml += "  <Row>\n";
+    const QStringList sumHeaders = {
+        "SKU", "Part Name", "Part Number", "Storage", "Rack No.", "Bin No.", "Total Serials", "Last Generated"
+    };
+    for (const QString &h : sumHeaders) {
+        xml += xmlCell("hdr", "String", h);
+    }
+    xml += "  </Row>\n";
+
+    // Aggregate by SKU from already-sorted rows
+    struct SkuAgg {
+        QString sku, partName, partNumber, storage, rackNo, binNo, lastGenerated;
+        int count = 0;
+    };
+    QList<SkuAgg> aggs;
+    for (const SerialRow &r : rows) {
+        if (!aggs.isEmpty() && aggs.last().sku == r.sku) {
+            aggs.last().count++;
+            aggs.last().lastGenerated = r.generatedAt;
+        } else {
+            SkuAgg a;
+            a.sku = r.sku; a.partName = r.partName; a.partNumber = r.partNumber;
+            a.storage = r.storage; a.rackNo = r.rackNo; a.binNo = r.binNo;
+            a.lastGenerated = r.generatedAt; a.count = 1;
+            aggs.append(a);
+        }
+    }
+    int sumRow = 0;
+    for (const SkuAgg &a : aggs) {
+        const QString s = (sumRow % 2 == 0) ? "even" : "odd";
+        ++sumRow;
+        xml += "  <Row>\n";
+        xml += xmlCell(s, "String", a.sku);
+        xml += xmlCell(s, "String", a.partName);
+        xml += xmlCell(s, "String", a.partNumber);
+        xml += xmlCell(s, "String", a.storage);
+        xml += xmlCell(s, "String", a.rackNo);
+        xml += xmlCell(s, "String", a.binNo);
+        xml += numCell(s, a.count);
+        xml += xmlCell(s, "String", a.lastGenerated);
+        xml += "  </Row>\n";
+    }
+    xml += "  </Table>\n";
+    xml +=
+        "  <WorksheetOptions xmlns=\"urn:schemas-microsoft-com:office:excel\">\n"
+        "   <FreezePanes/>\n"
+        "   <FrozenNoSplit/>\n"
+        "   <SplitHorizontal>1</SplitHorizontal>\n"
+        "   <TopRowBottomPane>1</TopRowBottomPane>\n"
+        "   <ActivePane>2</ActivePane>\n"
+        "  </WorksheetOptions>\n";
+    xml += " </Worksheet>\n";
+
+    xml += "</Workbook>\n";
+
+    // Write to file
+    QFile file(targetPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        setStatus("Unable to write Excel file.", false);
+        return;
+    }
+    QTextStream out(&file);
+    out.setEncoding(QStringConverter::Utf8);
+    out << xml;
+    file.close();
+
+    const int totalSerials = rows.size();
+    const int totalSkus    = aggs.size();
+    setStatus(QString("Exported %1 serials across %2 SKUs to %3")
+                  .arg(totalSerials).arg(totalSkus)
+                  .arg(QDir::toNativeSeparators(targetPath)), true);
+
+    logAction("EXCEL_EXPORT",
+              "ALL_SERIALS",
+              QString(),
+              targetPath,
+              QString(),
+              "Export",
+              "EXPORT",
+              true,
+              QString(),
+              targetPath);
 }
 
 void MainWindow::onSaveDbTriggered() {
+    if (!requireAccess(m_access.canBackupRestore, "You don't have permission to run database backups.")) {
+        return;
+    }
     const QString path = defaultBackupPath();
     backupDatabaseTo(path);
 }
 
 void MainWindow::onBackupDbClicked() {
+    if (!requireAccess(m_access.canBackupRestore, "You don't have permission to run database backups.")) {
+        return;
+    }
     onExportDbTriggered();
+}
+
+void MainWindow::onUninstallTriggered() {
+    const QDir appDir(QCoreApplication::applicationDirPath());
+    const QFileInfoList entries = appDir.entryInfoList(QStringList() << "unins*.exe",
+                                                       QDir::Files | QDir::Readable,
+                                                       QDir::Name | QDir::Reversed);
+    if (entries.isEmpty()) {
+        QMessageBox::information(this,
+                                 "Uninstall",
+                                 "Uninstaller was not found in this application folder.\n"
+                                 "This option is available for installed builds.");
+        return;
+    }
+
+    const QString uninstallerPath = entries.first().absoluteFilePath();
+    const auto reply = QMessageBox::question(
+        this,
+        "Uninstall",
+        "This will close the application and start the uninstaller.\n\nContinue?",
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (reply != QMessageBox::Yes) {
+        return;
+    }
+
+    if (!QProcess::startDetached(uninstallerPath, QStringList())) {
+        QMessageBox::warning(this,
+                             "Uninstall",
+                             QString("Unable to start uninstaller:\n%1")
+                                 .arg(QDir::toNativeSeparators(uninstallerPath)));
+        return;
+    }
+
+    QCoreApplication::quit();
 }
 
 void MainWindow::onExitTriggered() {
@@ -2113,11 +5218,22 @@ void MainWindow::onThemeSystem() {
     applyTheme(Theme::System);
 }
 
+void MainWindow::onHelpGuidesTriggered() {
+    showHelpGuidesDialog();
+}
+
+void MainWindow::onSkuReferenceTriggered() {
+    showSkuReferenceDialog();
+}
+
 void MainWindow::onPrintSettingsTriggered() {
+    const QString previewPrefix = selectedBarcodePrefix();
     const bool updated = PrintSettingsDialog::edit(
         this,
         m_printSettings,
-        [this](const QString &value) { return renderQrCode(value); });
+        previewPrefix,
+        [this](const QString &value) { return renderQrCode(value); },
+        [this](const QString &prefix) { return stickerLogoForPrefix(prefix); });
     if (updated) {
         m_printSettings.save();
     }
@@ -2129,6 +5245,166 @@ void MainWindow::onManageUsersTriggered() {
 
 void MainWindow::onSwitchUserTriggered() {
     promptLogin();
+}
+
+void MainWindow::showHelpGuidesDialog() {
+    QDialog dialog(this);
+    dialog.setWindowTitle("Help");
+    dialog.setMinimumSize(900, 640);
+    dialog.resize(980, 700);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(10);
+
+    QLabel *intro = new QLabel("Open product documentation directly inside the application.", &dialog);
+    intro->setWordWrap(true);
+    layout->addWidget(intro);
+
+    QTabWidget *docsTabs = new QTabWidget(&dialog);
+    docsTabs->setObjectName("helpDocsTabWidget");
+
+    QTextBrowser *userGuideBrowser = new QTextBrowser(docsTabs);
+    userGuideBrowser->setObjectName("userGuideTextBrowser");
+    userGuideBrowser->setReadOnly(true);
+    userGuideBrowser->setOpenExternalLinks(true);
+    userGuideBrowser->setMarkdown(loadDocumentationMarkdown("Warehouse_SKU_QR_Manager_User_Guide.md"));
+    docsTabs->addTab(userGuideBrowser, "User Guide");
+
+    QTextBrowser *technicalGuideBrowser = new QTextBrowser(docsTabs);
+    technicalGuideBrowser->setObjectName("technicalGuideTextBrowser");
+    technicalGuideBrowser->setReadOnly(true);
+    technicalGuideBrowser->setOpenExternalLinks(true);
+    technicalGuideBrowser->setMarkdown(loadDocumentationMarkdown("Warehouse_SKU_QR_Manager_Technical_Documentation.md"));
+    docsTabs->addTab(technicalGuideBrowser, "Technical Guide");
+
+    layout->addWidget(docsTabs, 1);
+
+    QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    dialog.exec();
+}
+
+void MainWindow::showSkuReferenceDialog() {
+    const QStringList localPaths = {
+        QStringLiteral("D:/Wareehouse Bar Code generator/Assets/SKU Ref 1.png"),
+        QStringLiteral("D:/Wareehouse Bar Code generator/Assets/SKU Ref 2.png")
+    };
+    const QStringList embeddedPaths = {
+        QStringLiteral(":/assets/sku_ref_1.png"),
+        QStringLiteral(":/assets/sku_ref_2.png")
+    };
+
+    auto pages = QSharedPointer<QVector<QPixmap>>::create();
+    pages->reserve(localPaths.size());
+    for (int i = 0; i < localPaths.size(); ++i) {
+        QPixmap pixmap;
+        pixmap.load(localPaths.at(i));
+        if (pixmap.isNull() && i < embeddedPaths.size()) {
+            pixmap.load(embeddedPaths.at(i));
+        }
+        pages->append(pixmap);
+    }
+
+    bool anyPageAvailable = false;
+    for (const QPixmap &page : *pages) {
+        if (!page.isNull()) {
+            anyPageAvailable = true;
+            break;
+        }
+    }
+    if (!anyPageAvailable) {
+        QMessageBox::warning(this,
+                             "SKU Reference",
+                             "Unable to load SKU reference images from:\n"
+                             "D:\\Wareehouse Bar Code generator\\Assets\\SKU Ref 1.png\n"
+                             "D:\\Wareehouse Bar Code generator\\Assets\\SKU Ref 2.png");
+        return;
+    }
+
+    auto *dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setWindowModality(Qt::NonModal);
+    dialog->setWindowTitle("SKU Reference");
+    dialog->setWindowFlag(Qt::WindowMaximizeButtonHint, true);
+    dialog->setWindowFlag(Qt::WindowMinimizeButtonHint, true);
+    dialog->setMinimumSize(860, 620);
+    dialog->resize(980, 700);
+
+    QVBoxLayout *layout = new QVBoxLayout(dialog);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(10);
+
+    QLabel *intro = new QLabel("SKU Reference image viewer. Use mouse wheel to zoom, drag/scroll to pan.", dialog);
+    intro->setWordWrap(true);
+    layout->addWidget(intro);
+
+    auto *imageView = new ZoomableImageView(dialog);
+    imageView->setFrameShape(QFrame::StyledPanel);
+    layout->addWidget(imageView, 1);
+
+    auto *controlsLayout = new QHBoxLayout();
+    controlsLayout->setContentsMargins(0, 0, 0, 0);
+    controlsLayout->setSpacing(10);
+
+    QPushButton *prevButton = new QPushButton("Previous", dialog);
+    QPushButton *nextButton = new QPushButton("Next", dialog);
+    QLabel *pageIndicator = new QLabel(dialog);
+    pageIndicator->setAlignment(Qt::AlignCenter);
+    pageIndicator->setMinimumWidth(160);
+
+    controlsLayout->addWidget(prevButton);
+    controlsLayout->addWidget(pageIndicator, 1);
+    controlsLayout->addWidget(nextButton);
+    layout->addLayout(controlsLayout);
+
+    QDialogButtonBox *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+    layout->addWidget(buttons);
+
+    auto currentPageIndex = QSharedPointer<int>::create(0);
+    auto updatePage = [imageView, pageIndicator, prevButton, nextButton, pages, currentPageIndex]() {
+        const int totalPages = pages->size();
+        int index = *currentPageIndex;
+        if (index < 0) {
+            index = 0;
+        }
+        if (index >= totalPages) {
+            index = totalPages - 1;
+        }
+        *currentPageIndex = index;
+
+        imageView->setImage(pages->at(index));
+        pageIndicator->setText(QString("Page %1 of %2").arg(index + 1).arg(totalPages));
+        prevButton->setEnabled(index > 0);
+        nextButton->setEnabled(index < totalPages - 1);
+    };
+
+    connect(prevButton, &QPushButton::clicked, dialog, [currentPageIndex, updatePage]() {
+        *currentPageIndex -= 1;
+        updatePage();
+    });
+    connect(nextButton, &QPushButton::clicked, dialog, [currentPageIndex, updatePage]() {
+        *currentPageIndex += 1;
+        updatePage();
+    });
+
+    updatePage();
+
+    QScreen *screen = this->screen();
+    if (!screen) {
+        screen = QApplication::primaryScreen();
+    }
+    if (screen) {
+        const QRect available = screen->availableGeometry();
+        dialog->move(available.center() - QPoint(dialog->width() / 2, dialog->height() / 2));
+    }
+
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
 }
 
 bool MainWindow::initDb() {
@@ -2175,6 +5451,9 @@ bool MainWindow::initDb() {
 
 bool MainWindow::ensureSchema() {
     QSqlQuery q(m_db);
+
+    // This is both the initial bootstrap and the in-place migration path, so table
+    // creation stays additive and later column fixes are handled below.
     if (!q.exec(
             "CREATE TABLE IF NOT EXISTS sku_rules ("
             "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -2208,7 +5487,12 @@ bool MainWindow::ensureSchema() {
             "  image_path TEXT,"
             "  image_blob BLOB,"
             "  comments TEXT,"
-            "  created_at TEXT"
+            "  created_at TEXT,"
+            "  is_deleted INTEGER DEFAULT 0,"
+            "  deleted_at TEXT,"
+            "  deleted_by TEXT,"
+            "  delete_reason TEXT,"
+            "  deleted_snapshot TEXT"
             ")")) {
         return false;
     }
@@ -2226,6 +5510,15 @@ bool MainWindow::ensureSchema() {
             "  role_key TEXT PRIMARY KEY,"
             "  display_name TEXT NOT NULL,"
             "  base_role TEXT NOT NULL,"
+            "  can_add INTEGER,"
+            "  can_edit INTEGER,"
+            "  can_delete INTEGER,"
+            "  can_serial_edit INTEGER,"
+            "  can_serial_delete INTEGER,"
+            "  can_print INTEGER,"
+            "  can_manage_users INTEGER,"
+            "  can_backup_restore INTEGER,"
+            "  can_export INTEGER,"
             "  created_at TEXT NOT NULL"
             ")")) {
         return false;
@@ -2241,6 +5534,15 @@ bool MainWindow::ensureSchema() {
             "  password_hash TEXT NOT NULL,"
             "  password_salt TEXT NOT NULL,"
             "  role TEXT NOT NULL,"
+            "  perm_add INTEGER,"
+            "  perm_edit INTEGER,"
+            "  perm_delete INTEGER,"
+            "  perm_serial_edit INTEGER,"
+            "  perm_serial_delete INTEGER,"
+            "  perm_print INTEGER,"
+            "  perm_manage_users INTEGER,"
+            "  perm_backup_restore INTEGER,"
+            "  perm_export INTEGER,"
             "  created_at TEXT NOT NULL"
             ")")) {
         return false;
@@ -2251,11 +5553,19 @@ bool MainWindow::ensureSchema() {
             "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
             "  timestamp TEXT NOT NULL,"
             "  user TEXT NOT NULL,"
+            "  user_id TEXT,"
+            "  role TEXT,"
+            "  machine_id TEXT,"
+            "  module_screen TEXT,"
+            "  action_type TEXT,"
             "  action TEXT NOT NULL,"
             "  entity TEXT NOT NULL,"
+            "  record_id TEXT,"
             "  old_value TEXT,"
             "  new_value TEXT,"
-            "  comment TEXT"
+            "  comment TEXT,"
+            "  result TEXT,"
+            "  error_message TEXT"
             ")")) {
         return false;
     }
@@ -2279,7 +5589,27 @@ bool MainWindow::ensureSchema() {
             "  quarter INTEGER NOT NULL,"
             "  serial INTEGER NOT NULL,"
             "  barcode TEXT NOT NULL UNIQUE,"
-            "  created_at TEXT"
+            "  created_at TEXT,"
+            "  is_deleted INTEGER DEFAULT 0,"
+            "  deleted_at TEXT,"
+            "  deleted_by TEXT,"
+            "  delete_reason TEXT,"
+            "  deleted_snapshot TEXT"
+            ")")) {
+        return false;
+    }
+
+    if (!q.exec(
+            "CREATE TABLE IF NOT EXISTS app_backup_history ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  timestamp TEXT NOT NULL,"
+            "  trigger_type TEXT NOT NULL,"
+            "  backup_path TEXT NOT NULL,"
+            "  checksum TEXT,"
+            "  file_size INTEGER,"
+            "  metadata TEXT,"
+            "  result TEXT NOT NULL,"
+            "  error_message TEXT"
             ")")) {
         return false;
     }
@@ -2290,6 +5620,10 @@ bool MainWindow::ensureSchema() {
     q.exec("CREATE INDEX IF NOT EXISTS idx_sku_catalog_category ON sku_catalog(category_code, sub_category)");
     q.exec("CREATE INDEX IF NOT EXISTS idx_app_users_username ON app_users(username)");
     q.exec("CREATE INDEX IF NOT EXISTS idx_app_roles_key ON app_roles(role_key)");
+    q.exec("CREATE INDEX IF NOT EXISTS idx_sku_catalog_active ON sku_catalog(is_deleted, sku)");
+    q.exec("CREATE INDEX IF NOT EXISTS idx_barcode_log_active ON barcode_log(is_deleted, sku, year, quarter)");
+    q.exec("CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON app_audit_log(timestamp)");
+    q.exec("CREATE INDEX IF NOT EXISTS idx_backup_timestamp ON app_backup_history(timestamp)");
 
     auto ensureColumn = [&](const QString &table, const QString &column, const QString &type) {
         QSqlQuery info(m_db);
@@ -2312,6 +5646,61 @@ bool MainWindow::ensureSchema() {
     if (!ensureColumn("app_users", "email", "TEXT")) {
         return false;
     }
+    if (!ensureColumn("app_users", "perm_add", "INTEGER")) {
+        return false;
+    }
+    if (!ensureColumn("app_users", "perm_edit", "INTEGER")) {
+        return false;
+    }
+    if (!ensureColumn("app_users", "perm_delete", "INTEGER")) {
+        return false;
+    }
+    if (!ensureColumn("app_users", "perm_serial_edit", "INTEGER")) {
+        return false;
+    }
+    if (!ensureColumn("app_users", "perm_serial_delete", "INTEGER")) {
+        return false;
+    }
+    if (!ensureColumn("app_users", "perm_print", "INTEGER")) {
+        return false;
+    }
+    if (!ensureColumn("app_users", "perm_manage_users", "INTEGER")) {
+        return false;
+    }
+    if (!ensureColumn("app_users", "perm_backup_restore", "INTEGER")) {
+        return false;
+    }
+    if (!ensureColumn("app_users", "perm_export", "INTEGER")) {
+        return false;
+    }
+
+    if (!ensureColumn("app_roles", "can_add", "INTEGER")) {
+        return false;
+    }
+    if (!ensureColumn("app_roles", "can_edit", "INTEGER")) {
+        return false;
+    }
+    if (!ensureColumn("app_roles", "can_delete", "INTEGER")) {
+        return false;
+    }
+    if (!ensureColumn("app_roles", "can_serial_edit", "INTEGER")) {
+        return false;
+    }
+    if (!ensureColumn("app_roles", "can_serial_delete", "INTEGER")) {
+        return false;
+    }
+    if (!ensureColumn("app_roles", "can_print", "INTEGER")) {
+        return false;
+    }
+    if (!ensureColumn("app_roles", "can_manage_users", "INTEGER")) {
+        return false;
+    }
+    if (!ensureColumn("app_roles", "can_backup_restore", "INTEGER")) {
+        return false;
+    }
+    if (!ensureColumn("app_roles", "can_export", "INTEGER")) {
+        return false;
+    }
 
     if (!ensureColumn("sku_catalog", "weight_value", "REAL")) {
         return false;
@@ -2328,24 +5717,82 @@ bool MainWindow::ensureSchema() {
     if (!ensureColumn("sku_catalog", "bin_number", "TEXT")) {
         return false;
     }
+    if (!ensureColumn("sku_catalog", "is_deleted", "INTEGER DEFAULT 0")) {
+        return false;
+    }
+    if (!ensureColumn("sku_catalog", "deleted_at", "TEXT")) {
+        return false;
+    }
+    if (!ensureColumn("sku_catalog", "deleted_by", "TEXT")) {
+        return false;
+    }
+    if (!ensureColumn("sku_catalog", "delete_reason", "TEXT")) {
+        return false;
+    }
+    if (!ensureColumn("sku_catalog", "deleted_snapshot", "TEXT")) {
+        return false;
+    }
+
+    if (!ensureColumn("barcode_log", "is_deleted", "INTEGER DEFAULT 0")) {
+        return false;
+    }
+    if (!ensureColumn("barcode_log", "deleted_at", "TEXT")) {
+        return false;
+    }
+    if (!ensureColumn("barcode_log", "deleted_by", "TEXT")) {
+        return false;
+    }
+    if (!ensureColumn("barcode_log", "delete_reason", "TEXT")) {
+        return false;
+    }
+    if (!ensureColumn("barcode_log", "deleted_snapshot", "TEXT")) {
+        return false;
+    }
+
+    if (!ensureColumn("app_audit_log", "user_id", "TEXT")) {
+        return false;
+    }
+    if (!ensureColumn("app_audit_log", "role", "TEXT")) {
+        return false;
+    }
+    if (!ensureColumn("app_audit_log", "machine_id", "TEXT")) {
+        return false;
+    }
+    if (!ensureColumn("app_audit_log", "module_screen", "TEXT")) {
+        return false;
+    }
+    if (!ensureColumn("app_audit_log", "action_type", "TEXT")) {
+        return false;
+    }
+    if (!ensureColumn("app_audit_log", "record_id", "TEXT")) {
+        return false;
+    }
+    if (!ensureColumn("app_audit_log", "result", "TEXT")) {
+        return false;
+    }
+    if (!ensureColumn("app_audit_log", "error_message", "TEXT")) {
+        return false;
+    }
+
+    q.exec("UPDATE sku_catalog SET is_deleted = COALESCE(is_deleted, 0)");
+    q.exec("UPDATE barcode_log SET is_deleted = COALESCE(is_deleted, 0)");
 
     QSqlQuery migrateWeight(m_db);
     migrateWeight.exec("UPDATE sku_catalog SET weight_value = CAST(weight AS REAL) "
                        "WHERE (weight_value IS NULL OR weight_value = 0) AND weight IS NOT NULL");
     migrateWeight.exec("UPDATE sku_catalog SET weight_unit = 'kg' WHERE weight_unit IS NULL OR weight_unit = ''");
 
+    q.exec("DROP VIEW IF EXISTS sku_catalog_active");
+    q.exec("DROP VIEW IF EXISTS barcode_log_active");
+    q.exec("CREATE VIEW IF NOT EXISTS sku_catalog_active AS "
+           "SELECT * FROM sku_catalog WHERE COALESCE(is_deleted, 0) = 0");
+    q.exec("CREATE VIEW IF NOT EXISTS barcode_log_active AS "
+           "SELECT * FROM barcode_log WHERE COALESCE(is_deleted, 0) = 0");
+
     return true;
 }
 
 bool MainWindow::loadRulesIfEmpty() {
-    QSqlQuery check(m_db);
-    if (!check.exec("SELECT COUNT(*) FROM sku_rules")) {
-        return false;
-    }
-    if (check.next() && check.value(0).toInt() > 0) {
-        return true;
-    }
-
     const QString csvPath = findRulesCsvPath();
     if (csvPath.isEmpty()) {
         setStatus("Could not find sku_rules.csv. Place it under Assets/.", false);
@@ -2361,12 +5808,13 @@ bool MainWindow::loadRulesIfEmpty() {
     bool firstLine = true;
     QString lastCategoryDigit;
     QString lastCategoryName;
-
-    m_db.transaction();
-    QSqlQuery insert(m_db);
-    insert.prepare(
-        "INSERT INTO sku_rules (category_digit, category_name, subcategory_digit, subcategory_name) "
-        "VALUES (?, ?, ?, ?)");
+    struct RuleRow {
+        QString categoryDigit;
+        QString categoryName;
+        QString subDigit;
+        QString subName;
+    };
+    QList<RuleRow> rules;
 
     while (!in.atEnd()) {
         const QString line = in.readLine();
@@ -2381,6 +5829,7 @@ bool MainWindow::loadRulesIfEmpty() {
         if (fields.size() < 4) {
             continue;
         }
+
         QString categoryDigit = normalizedText(fields.at(0));
         QString categoryName = normalizedText(fields.at(1));
         if (categoryDigit.isEmpty()) {
@@ -2397,21 +5846,42 @@ bool MainWindow::loadRulesIfEmpty() {
             continue;
         }
 
-        insert.addBindValue(categoryDigit);
-        insert.addBindValue(categoryName);
-        insert.addBindValue(subDigit);
-        insert.addBindValue(subName);
-        if (!insert.exec()) {
-            m_db.rollback();
-            return false;
-        }
-
+        rules.append({categoryDigit, categoryName, subDigit, subName});
         lastCategoryDigit = categoryDigit;
         lastCategoryName = categoryName;
     }
 
-    m_db.commit();
-    return true;
+    if (rules.isEmpty()) {
+        setStatus("sku_rules.csv did not contain any valid rule rows.", false);
+        return false;
+    }
+
+    if (!m_db.transaction()) {
+        return false;
+    }
+    QSqlQuery clear(m_db);
+    if (!clear.exec("DELETE FROM sku_rules")) {
+        m_db.rollback();
+        return false;
+    }
+
+    QSqlQuery insert(m_db);
+    insert.prepare(
+        "INSERT INTO sku_rules (category_digit, category_name, subcategory_digit, subcategory_name) "
+        "VALUES (?, ?, ?, ?)");
+
+    for (const RuleRow &rule : rules) {
+        insert.addBindValue(rule.categoryDigit);
+        insert.addBindValue(rule.categoryName);
+        insert.addBindValue(rule.subDigit);
+        insert.addBindValue(rule.subName);
+        if (!insert.exec()) {
+            m_db.rollback();
+            return false;
+        }
+    }
+
+    return m_db.commit();
 }
 
 QString MainWindow::findRulesCsvPath() const {
@@ -2513,7 +5983,12 @@ bool MainWindow::loadCatalogIfEmpty() {
         const QString storage = normalizedText(fields.value(11));
         const QString rackNumber = QString();
         const QString binNumber = QString();
-        const QString dimensions = normalizedText(fields.value(12));
+        const QString rawDimensions = normalizedText(fields.value(12));
+        QString dimensions = rawDimensions;
+        QString normalizedDimensions;
+        if (tryNormalizeDimensionsCm(rawDimensions, &normalizedDimensions)) {
+            dimensions = normalizedDimensions;
+        }
         const QString weightText = normalizedText(fields.value(13));
         const QString imagePath = normalizedText(fields.value(15));
         const QString createdAt = normalizedText(fields.value(17));
@@ -2564,6 +6039,19 @@ bool MainWindow::loadCatalogIfEmpty() {
 
     if (inserted > 0) {
         setStatus(QString("Imported %1 SKU record(s) from existing CSV.").arg(inserted), true);
+        QJsonObject importDetails;
+        importDetails.insert("source_csv", csvPath);
+        importDetails.insert("inserted_rows", inserted);
+        logAction("CATALOG_IMPORT",
+                  "sku_catalog",
+                  QString(),
+                  QString::fromUtf8(QJsonDocument(importDetails).toJson(QJsonDocument::Compact)),
+                  QString(),
+                  "Data Import",
+                  "IMPORT",
+                  true,
+                  QString(),
+                  QString::number(inserted));
     }
 
     QFile flag(flagPath);
@@ -2581,11 +6069,17 @@ void MainWindow::loadCategories() {
     }
     m_categoryCombo->clear();
     QSqlQuery q(m_db);
-    if (!q.exec("SELECT DISTINCT category_digit, category_name FROM sku_rules ORDER BY CAST(category_digit AS INTEGER)")) {
+    if (!q.exec("SELECT category_digit, category_name, MIN(id) AS first_id "
+                "FROM sku_rules "
+                "GROUP BY category_digit, category_name "
+                "ORDER BY first_id")) {
         return;
     }
     while (q.next()) {
-        m_categoryCombo->addItem(q.value(1).toString(), q.value(0).toString());
+        const QString categoryDigit = q.value(0).toString();
+        const QString categoryName = q.value(1).toString();
+        m_categoryCombo->addItem(formatRuleDisplayText(categoryDigit, categoryName), categoryDigit);
+        m_categoryCombo->setItemData(m_categoryCombo->count() - 1, categoryName, kRuleNameRole);
     }
 }
 
@@ -2596,38 +6090,61 @@ void MainWindow::loadSubCategories(const QString &categoryDigit) {
     }
     m_subCategoryCombo->clear();
     QSqlQuery q(m_db);
-    q.prepare("SELECT subcategory_digit, subcategory_name FROM sku_rules WHERE category_digit = ? ORDER BY CAST(subcategory_digit AS INTEGER)");
+    q.prepare("SELECT subcategory_digit, subcategory_name FROM sku_rules "
+              "WHERE category_digit = ? ORDER BY id");
     q.addBindValue(categoryDigit);
     if (!q.exec()) {
         return;
     }
     while (q.next()) {
-        m_subCategoryCombo->addItem(q.value(1).toString(), q.value(0).toString());
+        const QString subCategoryDigit = q.value(0).toString();
+        const QString subCategoryName = q.value(1).toString();
+        m_subCategoryCombo->addItem(formatRuleDisplayText(subCategoryDigit, subCategoryName), subCategoryDigit);
+        m_subCategoryCombo->setItemData(m_subCategoryCombo->count() - 1, subCategoryName, kRuleNameRole);
     }
+}
+
+int MainWindow::firstAvailableItemSerial(const QString &categoryName, const QString &subCategoryName) const {
+    const QString trimmedCategory = categoryName.trimmed();
+    const QString trimmedSubCategory = subCategoryName.trimmed();
+    if (trimmedCategory.isEmpty() || trimmedSubCategory.isEmpty()) {
+        return 1;
+    }
+
+    QSqlQuery q(m_db);
+    q.prepare("SELECT item_serial FROM sku_catalog_active "
+              "WHERE category_code = ? AND sub_category = ? AND item_serial > 0 "
+              "ORDER BY item_serial ASC");
+    q.addBindValue(trimmedCategory);
+    q.addBindValue(trimmedSubCategory);
+
+    int candidate = 1;
+    if (q.exec()) {
+        while (q.next()) {
+            const int serial = q.value(0).toInt();
+            if (serial < candidate) {
+                continue;
+            }
+            if (serial > candidate) {
+                break;
+            }
+            ++candidate;
+        }
+    }
+    return candidate;
 }
 
 void MainWindow::updateSerialsAndSku(bool resetVariation) {
     const QString categoryDigit = m_categoryCombo->currentData().toString();
     const QString subCategoryDigit = m_subCategoryCombo->currentData().toString();
-    const QString categoryText = m_categoryCombo->currentText();
-    const QString subCategoryText = m_subCategoryCombo->currentText();
+    const QString categoryText = comboRuleName(m_categoryCombo);
+    const QString subCategoryText = comboRuleName(m_subCategoryCombo);
 
     if (categoryDigit.isEmpty() || subCategoryDigit.isEmpty()) {
         return;
     }
 
-    QSqlQuery q(m_db);
-    q.prepare("SELECT MAX(item_serial) FROM sku_catalog WHERE category_code = ? AND sub_category = ?");
-    q.addBindValue(categoryText);
-    q.addBindValue(subCategoryText);
-    int maxSerial = 0;
-    if (q.exec() && q.next()) {
-        if (!q.isNull(0)) {
-            maxSerial = q.value(0).toInt();
-        }
-    }
-
-    const int newSerial = maxSerial + 1;
+    const int newSerial = firstAvailableItemSerial(categoryText, subCategoryText);
 
     m_itemSerialSpin->blockSignals(true);
     m_variationSpin->blockSignals(true);
@@ -2673,10 +6190,11 @@ void MainWindow::updateNextBarcodeSerial() {
     const QString sku = extractSkuFromDisplay(m_barcodeSkuCombo->currentText());
     if (sku.isEmpty()) {
         m_barcodeNextSerialField->setText("1");
+        updateBarcodeSkuDetails();
         return;
     }
-    const int lastSerial = fetchLastBarcodeSerial(sku, year, quarter);
-    m_barcodeNextSerialField->setText(QString::number(lastSerial + 1));
+    const int nextSerial = fetchNextBarcodeSerial(sku, year, quarter);
+    m_barcodeNextSerialField->setText(QString::number(nextSerial));
     updateBarcodeSkuDetails();
 }
 
@@ -2684,24 +6202,136 @@ void MainWindow::onBarcodePeriodChanged() {
     updateNextBarcodeSerial();
 }
 
-QString MainWindow::buildBarcodeValue(const QString &sku, int serial, int year, int quarter) const {
-    return QString("SK%1%2%3%4")
+QString MainWindow::selectedBarcodePrefix() const {
+    if (!m_barcodePrefixCombo) {
+        return "SK";
+    }
+    QString prefix = m_barcodePrefixCombo->currentData().toString().trimmed().toUpper();
+    if (prefix.isEmpty()) {
+        prefix = m_barcodePrefixCombo->currentText().trimmed().left(2).toUpper();
+    }
+    return normalizeBarcodePrefix(prefix);
+}
+
+QString MainWindow::barcodePrefixFromValue(const QString &barcodeValue) const {
+    return normalizeBarcodePrefix(barcodeValue);
+}
+
+QString MainWindow::buildBarcodeValue(const QString &sku, int serial, int year, int quarter, const QString &prefix) const {
+    // Canonical QR format: prefix + normalized SKU + quarter + two-digit year + fixed-width serial.
+    const QString normalizedPrefix = normalizeBarcodePrefix(prefix);
+    return QString("%1%2%3%4%5")
+        .arg(normalizedPrefix)
         .arg(sku.trimmed().toUpper().remove(' '))
         .arg(quarter)
         .arg(year % 100, 2, 10, QLatin1Char('0'))
         .arg(serial, 5, 10, QLatin1Char('0'));
 }
 
-int MainWindow::fetchLastBarcodeSerial(const QString &sku, int year, int quarter) const {
+QString MainWindow::stickerWebsiteForPrefix(const QString &prefix) const {
+    const QString normalizedPrefix = normalizeBarcodePrefix(prefix);
+    if (normalizedPrefix == "SD") {
+        return "www.skylarkdrones.com";
+    }
+    if (normalizedPrefix == "SK") {
+        return "www.skykart.in";
+    }
+    return "Skylark Drones Manufacturing\nPrivate Limited";
+}
+
+QImage MainWindow::stickerLogoForPrefix(const QString &prefix) const {
+    const QString normalizedPrefix = normalizeBarcodePrefix(prefix);
+    const QString appDir = QCoreApplication::applicationDirPath();
+    QStringList logoNames;
+    if (normalizedPrefix == "SD") {
+        logoNames << "SD logo .png" << "SD logo.png"
+                  << "SD sticker logo .png" << "SD sticker logo.png";
+    } else if (normalizedPrefix == "SM") {
+        logoNames << "SDMPL Logo.png" << "SDMPL logo.png";
+    } else {
+        logoNames << "SK Logo.png" << "SK logo.png"
+                  << "SK sticker logo.png";
+    }
+
+    QStringList candidates;
+    if (normalizedPrefix == "SD") {
+        candidates << ":/assets/sd_sticker_logo.png";
+    } else if (normalizedPrefix == "SM") {
+        candidates << ":/assets/sm_sticker_logo.png";
+    } else {
+        candidates << ":/assets/sk_sticker_logo.png";
+    }
+    candidates << ":/assets/sticker_logo.png";
+    for (const QString &name : logoNames) {
+        candidates << QDir(appDir).filePath("Assets/" + name)
+                   << QDir(appDir).filePath("../Assets/" + name)
+                   << QDir(appDir).filePath("../../Assets/" + name)
+                   << QDir::current().filePath("Assets/" + name);
+    }
+
+    QImage logo;
+    for (const QString &candidate : candidates) {
+        if (!candidate.startsWith(":/") && !QFile::exists(candidate)) {
+            continue;
+        }
+        if (logo.load(candidate) && !logo.isNull()) {
+            return logo;
+        }
+    }
+
+    return QImage();
+}
+
+int MainWindow::fetchNextBarcodeSerial(const QString &sku, int year, int quarter) const {
+    const QList<int> serials = fetchNextBarcodeSerials(sku, year, quarter, 1);
+    return serials.isEmpty() ? 1 : serials.first();
+}
+
+QList<int> MainWindow::fetchNextBarcodeSerials(const QString &sku, int year, int quarter, int quantity) const {
+    QList<int> nextSerials;
+    if (quantity <= 0 || sku.trimmed().isEmpty()) {
+        return nextSerials;
+    }
+
     QSqlQuery q(m_db);
-    q.prepare("SELECT MAX(serial) FROM barcode_log WHERE sku = ? AND year = ? AND quarter = ?");
+    q.prepare("SELECT serial FROM barcode_log_active "
+              "WHERE sku = ? AND year = ? AND quarter = ? AND serial > 0 "
+              "ORDER BY serial ASC");
     q.addBindValue(sku);
     q.addBindValue(year);
     q.addBindValue(quarter);
-    if (q.exec() && q.next() && !q.isNull(0)) {
-        return q.value(0).toInt();
+    QList<int> existingSerials;
+    if (q.exec()) {
+        while (q.next()) {
+            if (!q.isNull(0)) {
+                existingSerials.append(q.value(0).toInt());
+            }
+        }
     }
-    return 0;
+
+    int candidate = 1;
+    int index = 0;
+    while (nextSerials.size() < quantity) {
+        while (index < existingSerials.size() && existingSerials.at(index) < candidate) {
+            ++index;
+        }
+
+        bool alreadyUsed = false;
+        while (index < existingSerials.size() && existingSerials.at(index) == candidate) {
+            alreadyUsed = true;
+            ++index;
+        }
+
+        if (alreadyUsed) {
+            ++candidate;
+            continue;
+        }
+
+        nextSerials.append(candidate);
+        ++candidate;
+    }
+
+    return nextSerials;
 }
 
 int MainWindow::currentQuarter() const {
@@ -2747,7 +6377,7 @@ int MainWindow::selectedBarcodeYear() const {
 
 bool MainWindow::skuExists(const QString &sku) const {
     QSqlQuery q(m_db);
-    q.prepare("SELECT COUNT(*) FROM sku_catalog WHERE sku = ?");
+    q.prepare("SELECT COUNT(*) FROM sku_catalog_active WHERE sku = ?");
     q.addBindValue(sku);
     if (q.exec() && q.next()) {
         return q.value(0).toInt() > 0;
@@ -2776,10 +6406,10 @@ void MainWindow::loadSkuList(const QString &filter, bool preserveText) {
 
     QSqlQuery q(m_db);
     if (trimmed.isEmpty()) {
-        q.prepare("SELECT sku, part_number, part_name FROM sku_catalog ORDER BY sku");
+        q.prepare("SELECT sku, part_number, part_name FROM sku_catalog_active ORDER BY sku");
     } else {
         q.prepare(
-            "SELECT sku, part_number, part_name FROM sku_catalog "
+            "SELECT sku, part_number, part_name FROM sku_catalog_active "
             "WHERE sku LIKE ? OR part_number LIKE ? OR part_name LIKE ? "
             "ORDER BY sku");
         const QString like = "%" + trimmed + "%";
@@ -2855,19 +6485,19 @@ void MainWindow::updateDashboardMetrics() {
     QSqlQuery q(m_db);
 
     int totalSkus = 0;
-    if (q.exec("SELECT COUNT(*) FROM sku_catalog") && q.next()) {
+    if (q.exec("SELECT COUNT(*) FROM sku_catalog_active") && q.next()) {
         totalSkus = q.value(0).toInt();
     }
 
     int totalBarcodes = 0;
-    if (q.exec("SELECT COUNT(*) FROM barcode_log") && q.next()) {
+    if (q.exec("SELECT COUNT(*) FROM barcode_log_active") && q.next()) {
         totalBarcodes = q.value(0).toInt();
     }
 
     const int quarter = currentQuarter();
     const int year = currentYear();
     int quarterCount = 0;
-    q.prepare("SELECT COUNT(*) FROM barcode_log WHERE year = ? AND quarter = ?");
+    q.prepare("SELECT COUNT(*) FROM barcode_log_active WHERE year = ? AND quarter = ?");
     q.addBindValue(year);
     q.addBindValue(quarter);
     if (q.exec() && q.next()) {
@@ -2878,10 +6508,74 @@ void MainWindow::updateDashboardMetrics() {
     m_totalBarcodesValueLabel->setText(QString::number(totalBarcodes));
     m_quarterBarcodesValueLabel->setText(QString::number(quarterCount));
 
-    refreshLatestSkuCards();
+    int sdSerials = 0;
+    int skSerials = 0;
+    int smSerials = 0;
+    QSqlQuery prefixQuery(m_db);
+    if (prefixQuery.exec("SELECT SUBSTR(UPPER(COALESCE(barcode, '')), 1, 2) AS prefix, COUNT(*) "
+                         "FROM barcode_log_active GROUP BY prefix")) {
+        while (prefixQuery.next()) {
+            const QString prefix = prefixQuery.value(0).toString().trimmed().toUpper();
+            const int count = prefixQuery.value(1).toInt();
+            if (prefix == "SD") {
+                sdSerials = count;
+            } else if (prefix == "SK") {
+                skSerials = count;
+            } else if (prefix == "SM") {
+                smSerials = count;
+            }
+        }
+    }
+
+    if (m_sdSerialsValueLabel) {
+        m_sdSerialsValueLabel->setText(QString::number(sdSerials));
+    }
+    if (m_skSerialsValueLabel) {
+        m_skSerialsValueLabel->setText(QString::number(skSerials));
+    }
+    if (m_smSerialsValueLabel) {
+        m_smSerialsValueLabel->setText(QString::number(smSerials));
+    }
+
+    scheduleLatestSkuCardsRefresh();
+}
+
+void MainWindow::scheduleLatestSkuCardsRefresh(int delayMs) {
+    if (!m_latestSkuRefreshTimer) {
+        m_latestSkuRefreshTimer = new QTimer(this);
+        m_latestSkuRefreshTimer->setSingleShot(true);
+        connect(m_latestSkuRefreshTimer, &QTimer::timeout, this, &MainWindow::refreshLatestSkuCards);
+    }
+
+    const int safeDelay = qMax(0, delayMs);
+    m_latestSkuRefreshTimer->start(safeDelay);
 }
 
 void MainWindow::updateBarcodeSkuDetails() {
+    auto updateSkuDetailsClickBehavior = [this](const QString &skuValue) {
+        if (!m_barcodeSkuDetailsGroupBox) {
+            return;
+        }
+
+        const bool hasSku = !skuValue.trimmed().isEmpty();
+        const QVariant skuProperty = hasSku ? QVariant(skuValue) : QVariant();
+        const Qt::CursorShape cursor = hasSku ? Qt::PointingHandCursor : Qt::ArrowCursor;
+
+        auto applyToWidget = [&](QWidget *widget) {
+            if (!widget) {
+                return;
+            }
+            widget->setProperty("sku", skuProperty);
+            widget->setCursor(cursor);
+        };
+
+        applyToWidget(m_barcodeSkuDetailsGroupBox);
+        const QList<QWidget *> clickTargets = m_barcodeSkuDetailsGroupBox->findChildren<QWidget *>();
+        for (QWidget *target : clickTargets) {
+            applyToWidget(target);
+        }
+    };
+
     const QString sku = extractSkuFromDisplay(m_barcodeSkuCombo->currentText());
     if (sku.isEmpty()) {
         m_barcodePartNameValueLabel->setText("-");
@@ -2890,20 +6584,23 @@ void MainWindow::updateBarcodeSkuDetails() {
             m_barcodeQuantityWordsValueLabel->setText("-");
         }
         loadBarcodeSkuImage(QByteArray(), QString());
+        updateSkuDetailsClickBehavior(QString());
         return;
     }
 
     QSqlQuery q(m_db);
-    q.prepare("SELECT part_name, part_number, image_blob, image_path FROM sku_catalog WHERE sku = ?");
+    q.prepare("SELECT part_name, part_number, image_blob, image_path FROM sku_catalog_active WHERE sku = ?");
     q.addBindValue(sku);
     if (q.exec() && q.next()) {
         m_barcodePartNameValueLabel->setText(q.value(0).toString());
         m_barcodePartNumberValueLabel->setText(q.value(1).toString());
         loadBarcodeSkuImage(q.value(2).toByteArray(), q.value(3).toString());
+        updateSkuDetailsClickBehavior(sku);
     } else {
         m_barcodePartNameValueLabel->setText("-");
         m_barcodePartNumberValueLabel->setText("-");
         loadBarcodeSkuImage(QByteArray(), QString());
+        updateSkuDetailsClickBehavior(QString());
     }
 
     updateQuantityWordsLabels(sku);
@@ -2918,13 +6615,50 @@ void MainWindow::refreshLatestSkuCards() {
         appendRunLog("refreshLatestSkuCards: grid/layout null");
         return;
     }
+    if (m_refreshingLatestSkuCards) {
+        return;
+    }
+    m_refreshingLatestSkuCards = true;
+    m_latestSkuContainer->setUpdatesEnabled(false);
+
+    int availableWidth = m_latestSkuContainer->width();
+    int availableHeight = m_latestSkuContainer->height();
+    if (m_latestSkuScrollArea && m_latestSkuScrollArea->viewport()) {
+        availableWidth = m_latestSkuScrollArea->viewport()->width();
+        availableHeight = m_latestSkuScrollArea->viewport()->height();
+    }
+    availableWidth = qMax(320, availableWidth);
+    availableHeight = qMax(220, availableHeight);
+
+    const int outerMargin = qBound(8, availableWidth / 65, 20);
+    const int spacing = qBound(8, availableWidth / 75, 22);
+    m_latestSkuGridLayout->setContentsMargins(outerMargin, outerMargin, outerMargin, outerMargin);
+    m_latestSkuGridLayout->setHorizontalSpacing(spacing);
+    m_latestSkuGridLayout->setVerticalSpacing(spacing);
+    m_latestSkuGridLayout->setAlignment(Qt::AlignTop | Qt::AlignLeft);
 
     while (QLayoutItem *item = m_latestSkuGridLayout->takeAt(0)) {
-        if (item->widget()) {
-            item->widget()->deleteLater();
+        if (QWidget *w = item->widget()) {
+            delete w;
         }
         delete item;
     }
+
+    const int usableWidth = qMax(1, availableWidth - outerMargin * 2);
+    const int usableHeight = qMax(1, availableHeight - outerMargin * 2);
+    const int minCardWidthPx = 250;
+    const int maxCardWidthPx = 420;
+    int columns = qMax(1, (usableWidth + spacing) / (minCardWidthPx + spacing));
+    int cardWidthPx = qMax(minCardWidthPx, (usableWidth - (columns - 1) * spacing) / columns);
+    if (cardWidthPx > maxCardWidthPx) {
+        const int preferredColumns = qMax(1, (usableWidth + spacing) / (maxCardWidthPx + spacing));
+        columns = qMax(columns, preferredColumns);
+        cardWidthPx = qMax(minCardWidthPx, (usableWidth - (columns - 1) * spacing) / columns);
+    }
+    cardWidthPx = qBound(minCardWidthPx, cardWidthPx, maxCardWidthPx);
+    const int cardHeightPx = qBound(150, static_cast<int>(cardWidthPx * 0.58), 230);
+    const int rows = qMax(1, (usableHeight + spacing) / (cardHeightPx + spacing));
+    const int cardLimit = qMax(6, columns * rows);
 
     const int year = selectedBarcodeYear();
     const int quarter = selectedBarcodeQuarter();
@@ -2933,15 +6667,23 @@ void MainWindow::refreshLatestSkuCards() {
         "SELECT s.sku, s.part_name, s.image_blob, s.image_path, s.created_at, "
         "COALESCE(t.total_count, 0) AS total_serials, "
         "COALESCE(qtr.qtr_count, 0) AS quarter_incoming "
-        "FROM sku_catalog s "
-        "LEFT JOIN (SELECT sku, COUNT(*) AS total_count FROM barcode_log GROUP BY sku) t "
+        "FROM sku_catalog_active s "
+        "LEFT JOIN (SELECT sku, COUNT(*) AS total_count FROM barcode_log_active GROUP BY sku) t "
         "  ON t.sku = s.sku "
-        "LEFT JOIN (SELECT sku, COUNT(*) AS qtr_count FROM barcode_log WHERE year = ? AND quarter = ? GROUP BY sku) qtr "
+        "LEFT JOIN (SELECT sku, COUNT(*) AS qtr_count FROM barcode_log_active WHERE year = ? AND quarter = ? GROUP BY sku) qtr "
         "  ON qtr.sku = s.sku "
-        "ORDER BY datetime(s.created_at) DESC, s.id DESC LIMIT 6");
+        "ORDER BY datetime(s.created_at) DESC, s.id DESC LIMIT ?");
     q.addBindValue(year);
     q.addBindValue(quarter);
-    q.exec();
+    q.addBindValue(cardLimit);
+    if (!q.exec()) {
+        appendRunLog(QString("refreshLatestSkuCards: query failed: %1").arg(q.lastError().text()));
+    }
+
+    const qreal skuSizePt = qBound(8.0, cardWidthPx / 34.0, 13.0);
+    const qreal nameSizePt = qBound(9.0, cardWidthPx / 23.0, 18.0);
+    const qreal metaSizePt = qBound(8.0, cardWidthPx / 37.0, 12.0);
+    const qreal dateSizePt = qBound(7.0, cardWidthPx / 40.0, 11.0);
 
     int index = 0;
     while (q.next()) {
@@ -2955,45 +6697,67 @@ void MainWindow::refreshLatestSkuCards() {
 
         auto *card = new QFrame(m_latestSkuContainer);
         card->setObjectName("skuCard");
-        card->setFixedSize(320, 170);
+        card->setFixedSize(cardWidthPx, cardHeightPx);
+        card->setAttribute(Qt::WA_StyledBackground, true);
 
         auto *shadow = new QGraphicsDropShadowEffect(card);
-        shadow->setBlurRadius(18);
+        shadow->setBlurRadius(qBound(10, cardWidthPx / 18, 18));
         shadow->setOffset(0, 6);
         shadow->setColor(QColor(0, 0, 0, 140));
         card->setGraphicsEffect(shadow);
 
+        const int contentMargin = qBound(8, cardWidthPx / 30, 16);
+        const int contentSpacing = qBound(6, cardWidthPx / 40, 14);
         auto *cardLayout = new QHBoxLayout(card);
-        cardLayout->setContentsMargins(12, 12, 12, 12);
-        cardLayout->setSpacing(10);
+        cardLayout->setContentsMargins(contentMargin, contentMargin, contentMargin, contentMargin);
+        cardLayout->setSpacing(contentSpacing);
 
+        const int imageSizePx = qBound(64, static_cast<int>(cardHeightPx * 0.52), 120);
         auto *imageLabel = new QLabel(card);
         imageLabel->setObjectName("skuCardImage");
-        imageLabel->setFixedSize(88, 88);
+        imageLabel->setFixedSize(imageSizePx, imageSizePx);
         imageLabel->setAlignment(Qt::AlignCenter);
         loadImageLabelFromData(imageLabel, imageData, imagePath, AppGlobals::noImageText());
 
         auto *skuLabel = new QLabel(QString("SKU: %1").arg(sku), card);
         skuLabel->setObjectName("skuCardSku");
+        QFont skuFont = skuLabel->font();
+        skuFont.setPointSizeF(skuSizePt);
+        skuFont.setBold(true);
+        skuLabel->setFont(skuFont);
 
         auto *nameLabel = new QLabel(partName, card);
         nameLabel->setWordWrap(true);
         nameLabel->setObjectName("skuCardName");
+        QFont nameFont = nameLabel->font();
+        nameFont.setPointSizeF(nameSizePt);
+        nameFont.setBold(true);
+        nameLabel->setFont(nameFont);
+        nameLabel->setMaximumHeight(qBound(42, static_cast<int>(cardHeightPx * 0.35), 92));
 
         auto *incomingLabel = new QLabel(
             QString("Incoming (Q%1 %2): %3").arg(quarter).arg(year).arg(quarterIncoming), card);
         incomingLabel->setObjectName("skuCardMeta");
+        QFont incomingFont = incomingLabel->font();
+        incomingFont.setPointSizeF(metaSizePt);
+        incomingLabel->setFont(incomingFont);
 
         auto *totalLabel = new QLabel(QString("Total Serials: %1").arg(totalSerials), card);
         totalLabel->setObjectName("skuCardMeta");
+        QFont totalFont = totalLabel->font();
+        totalFont.setPointSizeF(metaSizePt);
+        totalLabel->setFont(totalFont);
 
         auto *dateLabel = new QLabel(createdAt.isEmpty() ? AppGlobals::noDateText()
                                                          : QString("Date: %1").arg(createdAt), card);
         dateLabel->setObjectName("skuCardDate");
+        QFont dateFont = dateLabel->font();
+        dateFont.setPointSizeF(dateSizePt);
+        dateLabel->setFont(dateFont);
 
         auto *textLayout = new QVBoxLayout();
         textLayout->setContentsMargins(0, 0, 0, 0);
-        textLayout->setSpacing(4);
+        textLayout->setSpacing(qBound(2, cardHeightPx / 60, 8));
         textLayout->addWidget(skuLabel);
         textLayout->addWidget(nameLabel);
         textLayout->addWidget(incomingLabel);
@@ -3018,8 +6782,8 @@ void MainWindow::refreshLatestSkuCards() {
         registerClickTarget(totalLabel);
         registerClickTarget(dateLabel);
 
-        const int row = index / 3;
-        const int col = index % 3;
+        const int row = index / columns;
+        const int col = index % columns;
         m_latestSkuGridLayout->addWidget(card, row, col);
         index++;
     }
@@ -3030,6 +6794,10 @@ void MainWindow::refreshLatestSkuCards() {
         emptyLabel->setStyleSheet("QLabel { color: #a7b3c6; }");
         m_latestSkuGridLayout->addWidget(emptyLabel, 0, 0);
     }
+
+    m_latestSkuContainer->setUpdatesEnabled(true);
+    m_latestSkuContainer->update();
+    m_refreshingLatestSkuCards = false;
 }
 
 QImage MainWindow::renderQrCode(const QString &value) const {
@@ -3093,9 +6861,49 @@ QString MainWindow::getVariationCode(int num) const {
 }
 
 void MainWindow::setStatus(const QString &message, bool ok) {
-    m_statusLabel->setText(message);
-    const QString color = ok ? "#1b5e20" : "#c62828";
-    m_statusLabel->setStyleSheet(QString("color: %1;").arg(color));
+    const QString text = message.trimmed();
+    if (m_statusLabel) {
+        m_statusLabel->setText(text);
+    }
+    const bool isDark = (m_currentTheme == Theme::Dark) ||
+                        (m_currentTheme == Theme::System && systemPrefersDarkTheme());
+    const QString color = ok ? (isDark ? "#3fb950" : "#1a7f37")
+                             : (isDark ? "#f85149" : "#cf222e");
+    if (m_statusLabel) {
+        m_statusLabel->setStyleSheet(QString("color: %1;").arg(color));
+    }
+    if (m_statusBarMessageLabel) {
+        m_statusBarMessageLabel->setText(text);
+        if (text.isEmpty()) {
+            m_statusBarMessageLabel->setStyleSheet("QLabel { padding-left: 4px; }");
+        } else {
+            m_statusBarMessageLabel->setStyleSheet(QString("QLabel { color: %1; padding-left: 4px; font-weight: 600; }").arg(color));
+        }
+    }
+    updateNoDbBanner();
+}
+
+void MainWindow::updateNoDbBanner() {
+    if (!m_noDbBannerLabel) {
+        return;
+    }
+    const bool isDark = (m_currentTheme == Theme::Dark) ||
+                        (m_currentTheme == Theme::System && systemPrefersDarkTheme());
+    if (m_db.isOpen()) {
+        const QString activeDbPath = QDir::toNativeSeparators(m_db.databaseName().trimmed());
+        const QString dbText = activeDbPath.isEmpty() ? QStringLiteral("Connected")
+                                                      : QString("Connected: %1").arg(activeDbPath);
+        m_noDbBannerLabel->setText(QString("Database status: %1").arg(dbText));
+        m_noDbBannerLabel->setStyleSheet(isDark
+            ? "QLabel#noDbBannerLabel { background-color: #0d2118; color: #3fb950; border: 1px solid #196c2e; border-radius: 8px; padding: 7px 12px; font-weight: 600; }"
+            : "QLabel#noDbBannerLabel { background-color: #dafbe1; color: #1a7f37; border: 1px solid #82cfaa; border-radius: 8px; padding: 7px 12px; font-weight: 600; }");
+    } else {
+        m_noDbBannerLabel->setText("Database status: Not connected. Use File \342\206\222 Load DB... to open or create a database.");
+        m_noDbBannerLabel->setStyleSheet(isDark
+            ? "QLabel#noDbBannerLabel { background-color: #2d1f00; color: #ffa657; border: 1px solid #7d4e00; border-radius: 8px; padding: 7px 12px; font-weight: 600; }"
+            : "QLabel#noDbBannerLabel { background-color: #fff8e5; color: #7d4e00; border: 1px solid #d4a72c; border-radius: 8px; padding: 7px 12px; font-weight: 600; }");
+    }
+    m_noDbBannerLabel->setVisible(true);
 }
 
 void MainWindow::populateResultsModel(const QList<QStringList> &rows) {
@@ -3137,6 +6945,14 @@ void MainWindow::populateResultsModel(const QList<QStringList> &rows) {
 
     m_resultsView->resizeColumnsToContents();
     m_resultsView->setColumnHidden(0, true);
+
+    if (m_searchNotFoundLabel) {
+        const bool noResults = rows.isEmpty();
+        m_searchNotFoundLabel->setVisible(noResults);
+        if (noResults) {
+            m_searchNotFoundLabel->setGeometry(m_resultsView->viewport()->rect());
+        }
+    }
 }
 
 void MainWindow::showResultsContextMenu(const QPoint &pos) {
@@ -3215,7 +7031,7 @@ void MainWindow::searchRecords() {
         "CASE WHEN image_blob IS NOT NULL AND length(image_blob) > 0 THEN 'Stored' "
         "WHEN image_path IS NOT NULL AND image_path <> '' THEN 'Path' ELSE '' END AS image_status, "
         "comments, created_at "
-        "FROM sku_catalog ORDER BY si_no DESC";
+        "FROM sku_catalog_active ORDER BY si_no DESC";
 
         QSqlQuery q(m_db);
         if (!q.exec(sql)) {
@@ -3254,7 +7070,7 @@ void MainWindow::searchRecords() {
         "CASE WHEN image_blob IS NOT NULL AND length(image_blob) > 0 THEN 'Stored' "
         "WHEN image_path IS NOT NULL AND image_path <> '' THEN 'Path' ELSE '' END AS image_status, "
         "comments, created_at "
-        "FROM sku_catalog WHERE " + clauses.join(" OR ") + " ORDER BY si_no DESC";
+        "FROM sku_catalog_active WHERE " + clauses.join(" OR ") + " ORDER BY si_no DESC";
 
     QSqlQuery q(m_db);
     q.prepare(sql);
@@ -3295,7 +7111,7 @@ void MainWindow::clearSearch() {
     m_searchPartNumber->clear();
     m_searchPartName->clear();
     m_resultsModel->clear();
-    m_statusLabel->clear();
+    setStatus(QString(), true);
     m_selectedId = 0;
     loadImageForSelectedId(0);
     if (m_searchQuantityWordsValueLabel) {
@@ -3335,11 +7151,11 @@ void MainWindow::fillFormFromSearch() {
     m_partNameField->setText(partName);
     m_partNumberField->setText(partNumber);
 
-    const int catIndex = m_categoryCombo->findText(categoryCode);
+    const int catIndex = findRuleComboIndex(m_categoryCombo, categoryCode);
     if (catIndex >= 0) {
         m_categoryCombo->setCurrentIndex(catIndex);
     }
-    const int subIndex = m_subCategoryCombo->findText(subCategory);
+    const int subIndex = findRuleComboIndex(m_subCategoryCombo, subCategory);
     if (subIndex >= 0) {
         m_subCategoryCombo->setCurrentIndex(subIndex);
     }
@@ -3352,7 +7168,12 @@ void MainWindow::fillFormFromSearch() {
     m_variationSpin->blockSignals(false);
 
     m_skuField->setText(sku);
-    m_dimensionsField->setText(dimensions);
+    QString normalizedDimensionsForDisplay;
+    if (tryNormalizeDimensionsCm(dimensions, &normalizedDimensionsForDisplay)) {
+        m_dimensionsField->setText(normalizedDimensionsForDisplay);
+    } else {
+        m_dimensionsField->setText(dimensions);
+    }
     QString weightValueText = weightDisplay;
     if (weightValueText.contains(' ')) {
         weightValueText = weightValueText.section(' ', 0, 0);
@@ -3385,6 +7206,13 @@ void MainWindow::saveForm() {
         return;
     }
 
+    QString normalizedDimensions;
+    if (!tryNormalizeDimensionsCm(m_dimensionsField->text(), &normalizedDimensions)) {
+        setStatus("Product dimensions must be in format: L cm x W cm x H cm.", false);
+        return;
+    }
+    m_dimensionsField->setText(normalizedDimensions);
+
     bool weightOk = false;
     const double weightValue = m_weightField->text().trimmed().toDouble(&weightOk);
     if (!weightOk || weightValue <= 0.0) {
@@ -3407,7 +7235,7 @@ void MainWindow::saveForm() {
     m_skuField->setText(sku);
 
     QSqlQuery dup(m_db);
-    dup.prepare("SELECT COUNT(*) FROM sku_catalog WHERE sku = ?");
+    dup.prepare("SELECT COUNT(*) FROM sku_catalog_active WHERE sku = ?");
     dup.addBindValue(sku);
     if (!dup.exec() || !dup.next()) {
         setStatus("Failed to check SKU duplicates.", false);
@@ -3447,15 +7275,15 @@ void MainWindow::saveForm() {
     insert.addBindValue(normalizedText(m_partNumberField->text()));
     insert.addBindValue(sku);
     insert.addBindValue(normalizedText(m_partNameField->text()));
-    insert.addBindValue(m_categoryCombo->currentText());
-    insert.addBindValue(m_subCategoryCombo->currentText());
+    insert.addBindValue(comboRuleName(m_categoryCombo));
+    insert.addBindValue(comboRuleName(m_subCategoryCombo));
     insert.addBindValue(m_itemSerialSpin->value());
     insert.addBindValue(m_variationSpin->value());
     insert.addBindValue(m_descriptionEdit->toPlainText().trimmed());
     insert.addBindValue(normalizedText(m_storageField->text()));
     insert.addBindValue(normalizedText(m_rackNumberField ? m_rackNumberField->text() : QString()));
     insert.addBindValue(normalizedText(m_binNumberField ? m_binNumberField->text() : QString()));
-    insert.addBindValue(normalizedText(m_dimensionsField->text()));
+    insert.addBindValue(normalizedDimensions);
     insert.addBindValue(weightValue);
     insert.addBindValue("kg");
     insert.addBindValue(normalizedText(m_productFamilyField->text()));
@@ -3467,6 +7295,16 @@ void MainWindow::saveForm() {
 
     if (!insert.exec()) {
         setStatus("Failed to save entry.", false);
+        logAction("SKU_CREATE",
+                  sku,
+                  QString(),
+                  QString(),
+                  "Failed to save entry.",
+                  "SKU Master",
+                  "CREATE",
+                  false,
+                  insert.lastError().text(),
+                  sku);
         return;
     }
 
@@ -3474,15 +7312,15 @@ void MainWindow::saveForm() {
     newValue.insert("sku", sku);
     newValue.insert("part_number", normalizedText(m_partNumberField->text()));
     newValue.insert("part_name", normalizedText(m_partNameField->text()));
-    newValue.insert("category", m_categoryCombo->currentText());
-    newValue.insert("sub_category", m_subCategoryCombo->currentText());
+    newValue.insert("category", comboRuleName(m_categoryCombo));
+    newValue.insert("sub_category", comboRuleName(m_subCategoryCombo));
     newValue.insert("item_serial", m_itemSerialSpin->value());
     newValue.insert("variation", m_variationSpin->value());
     newValue.insert("description", m_descriptionEdit->toPlainText().trimmed());
     newValue.insert("storage", normalizedText(m_storageField->text()));
     newValue.insert("rack_number", normalizedText(m_rackNumberField ? m_rackNumberField->text() : QString()));
     newValue.insert("bin_number", normalizedText(m_binNumberField ? m_binNumberField->text() : QString()));
-    newValue.insert("dimensions", normalizedText(m_dimensionsField->text()));
+    newValue.insert("dimensions", normalizedDimensions);
     newValue.insert("weight_value", weightValue);
     newValue.insert("weight_unit", "kg");
     newValue.insert("product_family", normalizedText(m_productFamilyField->text()));
@@ -3496,7 +7334,12 @@ void MainWindow::saveForm() {
               sku,
               QString(),
               QString::fromUtf8(QJsonDocument(newValue).toJson(QJsonDocument::Compact)),
-              QString());
+              QString(),
+              "SKU Master",
+              "CREATE",
+              true,
+              QString(),
+              sku);
 
     m_skuField->setText(sku);
     m_selectedId = 0;
@@ -3538,21 +7381,27 @@ void MainWindow::generateBarcodes() {
         setStatus("Quantity must be a positive integer.", false);
         return;
     }
-    const int year = currentYear();
-    const int quarter = currentQuarter();
-    const int lastSerial = fetchLastBarcodeSerial(sku, year, quarter);
+    const int year = selectedBarcodeYear();
+    const int quarter = selectedBarcodeQuarter();
+    const QString barcodePrefix = selectedBarcodePrefix();
+    const QList<int> serials = fetchNextBarcodeSerials(sku, year, quarter, quantity);
+    if (serials.size() != quantity) {
+        setStatus("Unable to allocate serial numbers.", false);
+        return;
+    }
 
     QList<QStringList> rows;
     rows.reserve(quantity);
     m_lastGeneratedBarcodes.clear();
 
+    // Reserve and persist the full batch in one transaction so serial allocation stays
+    // contiguous even if one insert in the middle fails.
     m_db.transaction();
     QSqlQuery log(m_db);
     log.prepare("INSERT INTO barcode_log (sku, year, quarter, serial, barcode, created_at) VALUES (?,?,?,?,?,?)");
 
-    for (int i = 1; i <= quantity; ++i) {
-        const int serial = lastSerial + i;
-        const QString barcodeValue = buildBarcodeValue(sku, serial, year, quarter);
+    for (int serial : serials) {
+        const QString barcodeValue = buildBarcodeValue(sku, serial, year, quarter, barcodePrefix);
         const QString createdAt = QDateTime::currentDateTime().toString(Qt::ISODate);
 
         log.addBindValue(sku);
@@ -3565,6 +7414,16 @@ void MainWindow::generateBarcodes() {
         if (!log.exec()) {
             m_db.rollback();
             setStatus("Failed to save QR code batch.", false);
+            logAction("BARCODE_GENERATE",
+                      sku,
+                      QString(),
+                      QString(),
+                      "Failed to save QR code batch.",
+                      "Barcode",
+                      "CREATE",
+                      false,
+                      log.lastError().text(),
+                      sku);
             return;
         }
 
@@ -3574,13 +7433,7 @@ void MainWindow::generateBarcodes() {
 
     m_db.commit();
 
-    QSqlQuery up(m_db);
-    up.prepare("INSERT OR REPLACE INTO barcode_serials (sku, year, quarter, last_serial) VALUES (?,?,?,?)");
-    up.addBindValue(sku);
-    up.addBindValue(year);
-    up.addBindValue(quarter);
-    up.addBindValue(lastSerial + quantity);
-    up.exec();
+    refreshBarcodeSerialTracker(sku, year, quarter);
 
     populateBarcodeModel(rows);
 
@@ -3595,7 +7448,7 @@ void MainWindow::generateBarcodes() {
         m_barcodeValueField->setText(lastBarcode);
     }
 
-    m_barcodeNextSerialField->setText(QString::number(lastSerial + quantity + 1));
+    updateNextBarcodeSerial();
     setStatus(QString("Generated %1 QR code(s) for %2.").arg(quantity).arg(sku), true);
     updateDashboardMetrics();
     updateQuantityWordsLabels(sku);
@@ -3605,18 +7458,31 @@ void MainWindow::generateBarcodes() {
     logDetails.insert("quantity", quantity);
     logDetails.insert("year", year);
     logDetails.insert("quarter", quarter);
-    logDetails.insert("serial_start", lastSerial + 1);
-    logDetails.insert("serial_end", lastSerial + quantity);
+    logDetails.insert("prefix", barcodePrefix);
+    if (!serials.isEmpty()) {
+        logDetails.insert("serial_start", serials.first());
+        logDetails.insert("serial_end", serials.last());
+    }
+    QJsonArray serialArray;
+    for (int serial : serials) {
+        serialArray.append(serial);
+    }
+    logDetails.insert("serials", serialArray);
     logAction("BARCODE_GENERATE",
               sku,
               QString(),
               QString::fromUtf8(QJsonDocument(logDetails).toJson(QJsonDocument::Compact)),
-              QString());
+              QString(),
+              "Barcode",
+              "CREATE",
+              true,
+              QString(),
+              sku);
 }
 
 
 void MainWindow::deleteSelectedBarcodes() {
-    if (!requireAccess(m_access.canDelete, "You don't have permission to delete QR codes.")) {
+    if (!requireAccess(m_access.canSerialDelete, "You don't have permission to delete serial numbers.")) {
         return;
     }
 
@@ -3648,9 +7514,12 @@ void MainWindow::deleteSelectedBarcodes() {
 
     m_db.transaction();
     QSqlQuery selectMeta(m_db);
-    selectMeta.prepare("SELECT sku, year, quarter, serial, created_at FROM barcode_log WHERE barcode = ?");
+    selectMeta.prepare("SELECT sku, year, quarter, serial, created_at FROM barcode_log_active WHERE barcode = ?");
     QSqlQuery del(m_db);
-    del.prepare("DELETE FROM barcode_log WHERE barcode = ?");
+    del.prepare(
+        "UPDATE barcode_log SET "
+        "is_deleted = 1, deleted_at = ?, deleted_by = ?, delete_reason = ?, deleted_snapshot = ? "
+        "WHERE barcode = ? AND COALESCE(is_deleted, 0) = 0");
 
     for (const QString &barcode : barcodes) {
         selectMeta.addBindValue(barcode);
@@ -3670,27 +7539,48 @@ void MainWindow::deleteSelectedBarcodes() {
         }
         selectMeta.finish();
 
+        QJsonObject oldValue;
+        oldValue.insert("sku", sku);
+        oldValue.insert("barcode", barcode);
+        oldValue.insert("serial", serial);
+        oldValue.insert("quarter", quarter);
+        oldValue.insert("year", year);
+        oldValue.insert("created_at", createdAt);
+        const QString oldValueJson = QString::fromUtf8(QJsonDocument(oldValue).toJson(QJsonDocument::Compact));
+
+        del.addBindValue(QDateTime::currentDateTime().toString(Qt::ISODate));
+        del.addBindValue(m_currentUsername);
+        del.addBindValue(comment);
+        del.addBindValue(oldValueJson);
         del.addBindValue(barcode);
         if (!del.exec()) {
             m_db.rollback();
             setStatus("Failed to delete serials.", false);
+            logAction("SERIAL_DELETE",
+                      barcode,
+                      QString(),
+                      QString(),
+                      "Failed to delete serials.",
+                      "Barcode",
+                      "DELETE",
+                      false,
+                      del.lastError().text(),
+                      barcode);
             return;
         }
         del.finish();
 
         if (!sku.isEmpty()) {
-            QJsonObject oldValue;
-            oldValue.insert("sku", sku);
-            oldValue.insert("barcode", barcode);
-            oldValue.insert("serial", serial);
-            oldValue.insert("quarter", quarter);
-            oldValue.insert("year", year);
-            oldValue.insert("created_at", createdAt);
             logAction("SERIAL_DELETE",
                       sku,
-                      QString::fromUtf8(QJsonDocument(oldValue).toJson(QJsonDocument::Compact)),
+                      oldValueJson,
                       QString(),
-                      comment);
+                      comment,
+                      "Barcode",
+                      "DELETE",
+                      true,
+                      QString(),
+                      barcode);
         }
     }
 
@@ -3779,13 +7669,17 @@ void MainWindow::onTabChanged(int index) {
     }
 }
 
-void MainWindow::printBarcodes() {
-    QStringList toPrint = m_lastGeneratedBarcodes;
-    if (toPrint.isEmpty()) {
-        const QString current = m_barcodeValueField->text().trimmed();
-        if (!current.isEmpty()) {
-            toPrint << current;
+void MainWindow::exportBarcodesToPdf(const QStringList &barcodes, const QString &selectedSkuHint) {
+    QStringList toPrint;
+    toPrint.reserve(barcodes.size());
+    QSet<QString> seen;
+    for (const QString &barcodeValue : barcodes) {
+        const QString barcode = barcodeValue.trimmed();
+        if (barcode.isEmpty() || seen.contains(barcode)) {
+            continue;
         }
+        seen.insert(barcode);
+        toPrint.append(barcode);
     }
 
     if (toPrint.isEmpty()) {
@@ -3793,12 +7687,19 @@ void MainWindow::printBarcodes() {
         return;
     }
 
-    const QString stamp = QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss");
+    QString safeSku = selectedSkuHint.trimmed();
+    safeSku.replace(QRegularExpression("[<>:\"/\\\\|?*\\x00-\\x1F]"), "_");
+    safeSku.replace(QRegularExpression("\\s+"), " ");
+    if (safeSku.isEmpty()) {
+        safeSku = "SKU";
+    }
+
+    const QString dateLabel = QDate::currentDate().toString("yyyy-MM-dd");
     QDir exportDir(dataDirPath());
     if (!exportDir.exists()) {
         exportDir.mkpath(".");
     }
-    const QString defaultName = exportDir.filePath(QString("qr_codes_%1.pdf").arg(stamp));
+    const QString defaultName = exportDir.filePath(QString("%1  %2.pdf").arg(safeSku, dateLabel));
     QString chosen = QFileDialog::getSaveFileName(
         this,
         "Export QR Codes (PDF)",
@@ -3850,7 +7751,7 @@ void MainWindow::printBarcodes() {
     for (const QString &barcode : toPrint) {
         QSqlQuery q(m_db);
         q.prepare("SELECT b.sku, b.serial, s.part_name, s.rack_number, s.bin_number "
-                  "FROM barcode_log b LEFT JOIN sku_catalog s ON s.sku = b.sku "
+                  "FROM barcode_log_active b LEFT JOIN sku_catalog_active s ON s.sku = b.sku "
                   "WHERE b.barcode = ?");
         q.addBindValue(barcode);
         if (q.exec() && q.next()) {
@@ -3870,110 +7771,199 @@ void MainWindow::printBarcodes() {
         return;
     }
 
-    const qreal edgeMarginMm = 2.0;
-    const qreal contentLeftMm = edgeMarginMm;
-    const qreal contentTopMm = edgeMarginMm;
-    const qreal contentRightMm = labelWidthMm - edgeMarginMm;
-    const qreal contentBottomMm = labelHeightMm - edgeMarginMm;
-    const qreal contentHeightMm = qMax(1.0, contentBottomMm - contentTopMm);
+    // ── geometry ──────────────────────────────────────────────────────────
+    const qreal edgeMarginMm  = qMax<qreal>(0.0, m_printSettings.edgeMarginMm);
+    const qreal innerMarginMm = qMax<qreal>(0.0, m_printSettings.innerMarginMm);
+    const qreal contentLeftMm   = edgeMarginMm;
+    const qreal contentTopMm    = edgeMarginMm;
+    const qreal contentRightMm  = qMax(contentLeftMm + 1.0, labelWidthMm - edgeMarginMm);
+    const qreal contentBottomMm = qMax(contentTopMm  + 1.0, labelHeightMm - edgeMarginMm);
+    const qreal contentWidthMm  = contentRightMm - contentLeftMm;
 
-    const qreal qrWidthMm = m_printSettings.barcodeWidthMm;
+    const qreal qrWidthMm  = m_printSettings.barcodeWidthMm;
     const qreal qrHeightMm = m_printSettings.barcodeHeightMm;
-    const qreal qrXmm = qMax(contentLeftMm, contentRightMm - qrWidthMm);
-    const qreal qrYmm = qMax(contentTopMm, contentBottomMm - qrHeightMm);
-    const qreal logoSizeMm = 5.0;
-    const qreal logoMarginMm = 0.0;
-    const qreal textLeftMm = qMax(m_printSettings.innerMarginMm, contentLeftMm);
-    const qreal textBlockWidthMm = qMax(1.0, qrXmm - textLeftMm);
-    const qreal textTopMm = contentTopMm;
-    const int partNameLines = 3;
-    const int detailLines = 5;
-    const int totalLines = partNameLines + detailLines;
-    const qreal lineHeightMm = qMin(3.5, contentHeightMm / qMax(1, totalLines));
-    const qreal partNameHeightMm = lineHeightMm * partNameLines;
+    const qreal logoSizeMm = qMax<qreal>(0.0, m_printSettings.logoSizeMm);
 
-    QFont textFont("Britannic Bold");
-    textFont.setBold(false);
-    const int linePx = qMax(1, static_cast<int>(mmToPx(lineHeightMm)));
-    textFont.setPixelSize(qMax(1, static_cast<int>(linePx * 0.68)));
-    painter.setFont(textFont);
+    // ── font metrics ──────────────────────────────────────────────────────
+    const qreal ptToMm          = 25.4 / 72.0;
+    const qreal partLineHeightMm= qMax<qreal>(1.0, m_printSettings.partNameFontSizePt * ptToMm * 1.35);
+    const qreal detailLineHeightMm = qMax<qreal>(1.0, m_printSettings.detailFontSizePt * ptToMm * 1.35);
+    // Part-name header: 2 wrapped lines
+    const qreal partNameHeightMm = partLineHeightMm * 2.0;
 
-    QImage logoImage(":/assets/sticker_logo.png");
-    if (logoImage.isNull()) {
-        const QString fallback = QDir(QCoreApplication::applicationDirPath())
-                                     .filePath("Assets/sticker_logo.png");
-        logoImage.load(fallback);
+    int maxSiteLineRows = 1;
+    for (int idx = 0; idx < items.size(); ++idx) {
+        const int rows = qMax(1, stickerWebsiteForPrefix(barcodePrefixFromValue(items.at(idx).barcode)).count('\n') + 1);
+        maxSiteLineRows = qMax(maxSiteLineRows, rows);
     }
+    Q_UNUSED(maxSiteLineRows)
 
+    // ── default element positions ─────────────────────────────────────────
+    // Part Name: full-width header, no left indent, top of content area.
+    const qreal defPartNameXmm  = contentLeftMm;
+    const qreal defPartNameYmm  = contentTopMm;
+
+    // QR Code: right side, directly below the part-name header.
+    const qreal defQrXmm = qMax(contentLeftMm, contentRightMm - qrWidthMm);
+    const qreal defQrYmm = contentTopMm + partNameHeightMm;
+
+    // Info Block: left side, below header; right edge stops before QR code.
+    const qreal resolvedQrXmm   = (m_printSettings.qrPosXmm >= 0.0) ? m_printSettings.qrPosXmm : defQrXmm;
+    const qreal infoXdefaultMm  = contentLeftMm + innerMarginMm;
+    const qreal infoWidthMm     = qMax(1.0, resolvedQrXmm - infoXdefaultMm - edgeMarginMm);
+    const qreal defInfoXmm      = infoXdefaultMm;
+    const qreal defInfoYmm      = contentTopMm + partNameHeightMm;
+
+    // Logo: bottom-left, below the info block / website area.
+    const qreal defLogoXmm = contentLeftMm;
+    const qreal defLogoYmm = qMax(contentTopMm, contentBottomMm - logoSizeMm);
+
+    // ── resolve stored vs. default (< 0 means use default) ────────────────
+    const qreal partNameXmm  = (m_printSettings.partNamePosXmm  >= 0.0) ? m_printSettings.partNamePosXmm  : defPartNameXmm;
+    const qreal partNameYmm  = (m_printSettings.partNamePosYmm  >= 0.0) ? m_printSettings.partNamePosYmm  : defPartNameYmm;
+    const qreal qrXmm        = (m_printSettings.qrPosXmm        >= 0.0) ? m_printSettings.qrPosXmm        : defQrXmm;
+    const qreal qrYmm        = (m_printSettings.qrPosYmm        >= 0.0) ? m_printSettings.qrPosYmm        : defQrYmm;
+    const qreal infoXmm      = (m_printSettings.infoBlockPosXmm >= 0.0) ? m_printSettings.infoBlockPosXmm : defInfoXmm;
+    const qreal infoYmm      = (m_printSettings.infoBlockPosYmm >= 0.0) ? m_printSettings.infoBlockPosYmm : defInfoYmm;
+    const qreal logoXmm_raw  = (m_printSettings.logoPosXmm      >= 0.0) ? m_printSettings.logoPosXmm      : defLogoXmm;
+    const qreal logoYmm_raw  = (m_printSettings.logoPosYmm      >= 0.0) ? m_printSettings.logoPosYmm      : defLogoYmm;
+    // clamp logo within content area
+    const qreal logoXmm = qMax(contentLeftMm, qMin(logoXmm_raw, qMax(contentLeftMm, contentRightMm  - logoSizeMm)));
+    const qreal logoYmm = qMax(contentTopMm,  qMin(logoYmm_raw, qMax(contentTopMm,  contentBottomMm - logoSizeMm)));
+
+    // ── fonts ─────────────────────────────────────────────────────────────
+    const QString fontFamily = m_printSettings.fontFamily.trimmed().isEmpty()
+                                   ? QStringLiteral("Britannic Bold")
+                                   : m_printSettings.fontFamily.trimmed();
+    QFont partFont(fontFamily);
+    partFont.setBold(true);
+    partFont.setPointSizeF(qMax<qreal>(1.0, m_printSettings.partNameFontSizePt));
+    QFont detailFont(fontFamily);
+    detailFont.setBold(false);
+    detailFont.setPointSizeF(qMax<qreal>(1.0, m_printSettings.detailFontSizePt));
+
+    // ── per-page rendering ────────────────────────────────────────────────
     for (int i = 0; i < items.size(); ++i) {
-        if (i > 0) {
-            printer.newPage();
-        }
+        if (i > 0) printer.newPage();
 
-        const PrintItem &item = items.at(i);
-        const QString partLine = QString("Part Name: %1").arg(item.partName.isEmpty() ? "-" : item.partName);
-        const QString skuLine = QString("SKU: %1").arg(item.sku.isEmpty() ? "-" : item.sku);
-        const QString rackLine = QString("Rack Number: %1").arg(item.rackNumber.isEmpty() ? "-" : item.rackNumber);
-        const QString binLine = QString("Bin Number: %1").arg(item.binNumber.isEmpty() ? "-" : item.binNumber);
-        const QString codeLine = item.barcode.isEmpty() ? "-" : item.barcode;
-        const QString siteLine = "www.skykart.in";
+        const PrintItem &item       = items.at(i);
+        const QString barcodePrefix = barcodePrefixFromValue(item.barcode);
+        const QString siteLine      = stickerWebsiteForPrefix(barcodePrefix);
+        const int     siteLineRows  = qMax(1, siteLine.count('\n') + 1);
+        const QString skuLine       = QString("SKU: %1").arg(item.sku.isEmpty()        ? "-" : item.sku);
+        const QString rackLine      = QString("Rack: %1").arg(item.rackNumber.isEmpty() ? "-" : item.rackNumber);
+        const QString binLine       = QString("Bin: %1").arg(item.binNumber.isEmpty()   ? "-" : item.binNumber);
+        const QString codeLine      = item.barcode.isEmpty() ? "-" : item.barcode;
+        const QImage  logoImage     = stickerLogoForPrefix(barcodePrefix);
 
         painter.setPen(Qt::black);
-        const qreal textXpx = mmToPx(textLeftMm);
-        const qreal textWidthPx = mmToPx(textBlockWidthMm);
 
-        auto drawTextBlock = [&](const QString &text, qreal yMm, qreal hMm, bool wrap, bool fitToWidth) {
-            QFont useFont = textFont;
-            if (fitToWidth) {
-                QFontMetrics fm(useFont);
-                const int textPx = fm.horizontalAdvance(text);
-                if (textPx > 0 && textPx > static_cast<int>(textWidthPx)) {
-                    const qreal scale = textWidthPx / textPx;
-                    useFont.setPixelSize(qMax(1, static_cast<int>(useFont.pixelSize() * scale)));
+        // Helper: draw a single text line/block inside an (xMm, yMm, wMm, hMm) rect.
+        auto drawText = [&](const QString &text,
+                            qreal xMm, qreal yMm, qreal wMm, qreal hMm,
+                            const QFont &font, bool wrap, bool shrinkToFit) {
+            const qreal xPx = mmToPx(xMm);
+            const qreal wPx = mmToPx(wMm);
+            const qreal hPx = mmToPx(hMm);
+            QFont use = font;
+            if (shrinkToFit || wrap) {
+                qreal pt = qMax(1.0, use.pointSizeF());
+                while (pt > 1.0) {
+                    QFontMetricsF fm(use);
+                    bool shrink = false;
+                    if (shrinkToFit && fm.horizontalAdvance(text) > wPx) shrink = true;
+                    if (!shrink && wrap) {
+                        if (fm.boundingRect(QRectF(0,0,wPx,hPx), Qt::AlignLeft|Qt::TextWordWrap, text).height() > hPx)
+                            shrink = true;
+                    }
+                    if (!shrink) break;
+                    pt -= 0.25;
+                    use.setPointSizeF(pt);
                 }
             }
-            painter.setFont(useFont);
-            QFontMetrics fm(useFont);
-            QRectF rect(textXpx, mmToPx(yMm), textWidthPx, mmToPx(hMm));
-            const int flags = wrap ? (Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap)
-                                   : (Qt::AlignLeft | Qt::AlignVCenter);
-            const QString textToDraw = wrap ? text
-                                            : fm.elidedText(text, Qt::ElideRight, static_cast<int>(textWidthPx));
-            painter.drawText(rect, flags, textToDraw);
+            painter.setFont(use);
+            QFontMetrics fm(use);
+            QRectF r(xPx, mmToPx(yMm), wPx, hPx);
+            if (wrap) {
+                painter.drawText(r, Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap, text);
+            } else {
+                painter.drawText(r, Qt::AlignLeft | Qt::AlignVCenter,
+                                 fm.elidedText(text, Qt::ElideRight, qMax(1, (int)wPx)));
+            }
         };
 
-        drawTextBlock(partLine, textTopMm, partNameHeightMm, true, false);
-        drawTextBlock(skuLine, textTopMm + partNameHeightMm, lineHeightMm, false, false);
-        drawTextBlock(rackLine, textTopMm + partNameHeightMm + lineHeightMm, lineHeightMm, false, false);
-        drawTextBlock(binLine, textTopMm + partNameHeightMm + lineHeightMm * 2, lineHeightMm, false, false);
-        drawTextBlock(codeLine, textTopMm + partNameHeightMm + lineHeightMm * 3, lineHeightMm, false, true);
-        drawTextBlock(siteLine, textTopMm + partNameHeightMm + lineHeightMm * 4, lineHeightMm, false, true);
+        // 1. Part Name — full-width header, no left indent.
+        drawText(item.partName.isEmpty() ? "-" : item.partName,
+                 partNameXmm, partNameYmm, contentWidthMm, partNameHeightMm,
+                 partFont, true, false);
 
-        if (!logoImage.isNull()) {
-            const QRectF logoRect(mmToPx(contentRightMm - logoMarginMm - logoSizeMm),
-                                  mmToPx(contentTopMm + logoMarginMm),
-                                  mmToPx(logoSizeMm),
-                                  mmToPx(logoSizeMm));
-            QImage logoScaled = logoImage.scaled(logoRect.size().toSize(),
-                                                 Qt::KeepAspectRatio,
-                                                 Qt::SmoothTransformation);
-            const qreal bx = logoRect.left() + (logoRect.width() - logoScaled.width()) / 2.0;
-            const qreal by = logoRect.top() + (logoRect.height() - logoScaled.height()) / 2.0;
-            painter.drawImage(QPointF(bx, by), logoScaled);
+        // 2. Info block: SKU, Rack, Bin, Serial, Website — left column below header.
+        drawText(skuLine,   infoXmm, infoYmm,                              infoWidthMm, detailLineHeightMm, detailFont, false, false);
+        drawText(rackLine,  infoXmm, infoYmm + detailLineHeightMm,         infoWidthMm, detailLineHeightMm, detailFont, false, false);
+        drawText(binLine,   infoXmm, infoYmm + detailLineHeightMm * 2,     infoWidthMm, detailLineHeightMm, detailFont, false, false);
+        drawText(codeLine,  infoXmm, infoYmm + detailLineHeightMm * 3,     infoWidthMm, detailLineHeightMm, detailFont, false, true);
+        drawText(siteLine,  infoXmm, infoYmm + detailLineHeightMm * 4,
+                 infoWidthMm, detailLineHeightMm * siteLineRows,
+                 detailFont, siteLineRows > 1, siteLineRows == 1);
+
+        // 3. QR Code — right column.
+        {
+            const QRectF qrRect(mmToPx(qrXmm), mmToPx(qrYmm), mmToPx(qrWidthMm), mmToPx(qrHeightMm));
+            const QImage qrImage = renderQrCode(item.barcode);
+            if (!qrImage.isNull()) {
+                QImage scaled = qrImage.scaled(qrRect.size().toSize(), Qt::KeepAspectRatio, Qt::FastTransformation);
+                painter.drawImage(QPointF(qrRect.left() + (qrRect.width()  - scaled.width())  / 2.0,
+                                          qrRect.top()  + (qrRect.height() - scaled.height()) / 2.0), scaled);
+            }
         }
 
-        const QRectF qrRect(mmToPx(qrXmm), mmToPx(qrYmm), mmToPx(qrWidthMm), mmToPx(qrHeightMm));
-        const QImage qrImage = renderQrCode(item.barcode);
-        if (!qrImage.isNull()) {
-            QImage scaled = qrImage.scaled(qrRect.size().toSize(), Qt::KeepAspectRatio, Qt::FastTransformation);
-            const qreal bx = qrRect.left() + (qrRect.width() - scaled.width()) / 2.0;
-            const qreal by = qrRect.top() + (qrRect.height() - scaled.height()) / 2.0;
-            painter.drawImage(QPointF(bx, by), scaled);
+        // 4. Logo — bottom-left by default.
+        if (!logoImage.isNull() && logoSizeMm > 0.0) {
+            const QRectF logoRect(mmToPx(logoXmm), mmToPx(logoYmm), mmToPx(logoSizeMm), mmToPx(logoSizeMm));
+            QImage logoScaled = logoImage.scaled(logoRect.size().toSize(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+            painter.drawImage(QPointF(logoRect.left() + (logoRect.width()  - logoScaled.width())  / 2.0,
+                                       logoRect.top()  + (logoRect.height() - logoScaled.height()) / 2.0), logoScaled);
         }
     }
 
     painter.end();
     setStatus(QString("QR codes exported to %1").arg(QDir::toNativeSeparators(chosen)), true);
+    logAction("PDF_EXPORT",
+              "QR_LABELS",
+              QString(),
+              chosen,
+              QString(),
+              "Export",
+              "EXPORT",
+              true,
+              QString(),
+              chosen);
+}
+
+void MainWindow::printBarcodes() {
+    if (!requireAccess(m_access.canPrint, "You don't have permission to export PDF labels.")) {
+        return;
+    }
+
+    // Export the full batch of last-generated barcodes so that generating N codes
+    // and clicking "Export QR Code" always produces a single PDF with all N labels.
+    QStringList toPrint = m_lastGeneratedBarcodes;
+    if (toPrint.isEmpty()) {
+        const QString current = m_barcodeValueField ? m_barcodeValueField->text().trimmed() : QString();
+        if (!current.isEmpty()) {
+            toPrint << current;
+        }
+    }
+    if (toPrint.isEmpty()) {
+        setStatus("No QR codes to export. Generate QR codes first.", false);
+        return;
+    }
+
+    QString selectedSku;
+    if (m_barcodeSkuCombo) {
+        selectedSku = extractSkuFromDisplay(m_barcodeSkuCombo->currentText());
+    }
+    exportBarcodesToPdf(toPrint, selectedSku);
 }
 
 void MainWindow::onBarcodeSkuInputChanged(const QString &text) {
@@ -4036,6 +8026,13 @@ void MainWindow::updateSelected() {
         return;
     }
 
+    QString normalizedDimensions;
+    if (!tryNormalizeDimensionsCm(m_dimensionsField->text(), &normalizedDimensions)) {
+        setStatus("Product dimensions must be in format: L cm x W cm x H cm.", false);
+        return;
+    }
+    m_dimensionsField->setText(normalizedDimensions);
+
     bool weightOk = false;
     const double weightValue = m_weightField->text().trimmed().toDouble(&weightOk);
     if (!weightOk || weightValue <= 0.0) {
@@ -4058,7 +8055,7 @@ void MainWindow::updateSelected() {
     m_skuField->setText(sku);
 
     QSqlQuery dup(m_db);
-    dup.prepare("SELECT COUNT(*) FROM sku_catalog WHERE sku = ? AND id != ?");
+    dup.prepare("SELECT COUNT(*) FROM sku_catalog_active WHERE sku = ? AND id != ?");
     dup.addBindValue(sku);
     dup.addBindValue(m_selectedId);
     if (!dup.exec() || !dup.next()) {
@@ -4076,7 +8073,7 @@ void MainWindow::updateSelected() {
         "SELECT sku, part_number, part_name, category_code, sub_category, item_serial, unique_variation, "
         "description, storage, rack_number, bin_number, dimensions, weight_value, weight_unit, "
         "product_family, image_blob, image_path, comments "
-        "FROM sku_catalog WHERE id = ?");
+        "FROM sku_catalog WHERE id = ? AND COALESCE(is_deleted, 0) = 0");
     oldFetch.addBindValue(m_selectedId);
     if (oldFetch.exec() && oldFetch.next()) {
         QJsonObject oldValue;
@@ -4112,7 +8109,7 @@ void MainWindow::updateSelected() {
         "item_serial = ?, unique_variation = ?, description = ?, storage = ?, rack_number = ?, bin_number = ?, "
         "dimensions = ?, weight_value = ?, weight_unit = ?, product_family = ?, image_blob = ?, image_path = ?, "
         "comments = ? "
-        "WHERE id = ?");
+        "WHERE id = ? AND COALESCE(is_deleted, 0) = 0");
 
     QByteArray imageData = m_imageBytes;
     QString imagePathForSave;
@@ -4126,15 +8123,15 @@ void MainWindow::updateSelected() {
     update.addBindValue(normalizedText(m_partNumberField->text()));
     update.addBindValue(sku);
     update.addBindValue(normalizedText(m_partNameField->text()));
-    update.addBindValue(m_categoryCombo->currentText());
-    update.addBindValue(m_subCategoryCombo->currentText());
+    update.addBindValue(comboRuleName(m_categoryCombo));
+    update.addBindValue(comboRuleName(m_subCategoryCombo));
     update.addBindValue(m_itemSerialSpin->value());
     update.addBindValue(m_variationSpin->value());
     update.addBindValue(m_descriptionEdit->toPlainText().trimmed());
     update.addBindValue(normalizedText(m_storageField->text()));
     update.addBindValue(normalizedText(m_rackNumberField ? m_rackNumberField->text() : QString()));
     update.addBindValue(normalizedText(m_binNumberField ? m_binNumberField->text() : QString()));
-    update.addBindValue(normalizedText(m_dimensionsField->text()));
+    update.addBindValue(normalizedDimensions);
     update.addBindValue(weightValue);
     update.addBindValue("kg");
     update.addBindValue(normalizedText(m_productFamilyField->text()));
@@ -4145,6 +8142,16 @@ void MainWindow::updateSelected() {
 
     if (!update.exec()) {
         setStatus("Failed to update entry.", false);
+        logAction("SKU_UPDATE",
+                  sku,
+                  oldValueJson,
+                  QString(),
+                  "Failed to update entry.",
+                  "SKU Master",
+                  "EDIT",
+                  false,
+                  update.lastError().text(),
+                  sku);
         return;
     }
 
@@ -4152,15 +8159,15 @@ void MainWindow::updateSelected() {
     newValue.insert("sku", sku);
     newValue.insert("part_number", normalizedText(m_partNumberField->text()));
     newValue.insert("part_name", normalizedText(m_partNameField->text()));
-    newValue.insert("category", m_categoryCombo->currentText());
-    newValue.insert("sub_category", m_subCategoryCombo->currentText());
+    newValue.insert("category", comboRuleName(m_categoryCombo));
+    newValue.insert("sub_category", comboRuleName(m_subCategoryCombo));
     newValue.insert("item_serial", m_itemSerialSpin->value());
     newValue.insert("variation", m_variationSpin->value());
     newValue.insert("description", m_descriptionEdit->toPlainText().trimmed());
     newValue.insert("storage", normalizedText(m_storageField->text()));
     newValue.insert("rack_number", normalizedText(m_rackNumberField ? m_rackNumberField->text() : QString()));
     newValue.insert("bin_number", normalizedText(m_binNumberField ? m_binNumberField->text() : QString()));
-    newValue.insert("dimensions", normalizedText(m_dimensionsField->text()));
+    newValue.insert("dimensions", normalizedDimensions);
     newValue.insert("weight_value", weightValue);
     newValue.insert("weight_unit", "kg");
     newValue.insert("product_family", normalizedText(m_productFamilyField->text()));
@@ -4173,7 +8180,12 @@ void MainWindow::updateSelected() {
               sku,
               oldValueJson,
               QString::fromUtf8(QJsonDocument(newValue).toJson(QJsonDocument::Compact)),
-              QString());
+              QString(),
+              "SKU Master",
+              "EDIT",
+              true,
+              QString(),
+              sku);
 
     setStatus("Entry updated successfully.", true);
     m_searchSku->setText(sku);
@@ -4201,7 +8213,7 @@ void MainWindow::deleteSelectedSku() {
     }
 
     QSqlQuery fetch(m_db);
-    fetch.prepare("SELECT sku FROM sku_catalog WHERE id = ?");
+    fetch.prepare("SELECT sku FROM sku_catalog WHERE id = ? AND COALESCE(is_deleted, 0) = 0");
     fetch.addBindValue(m_selectedId);
     if (!fetch.exec() || !fetch.next()) {
         setStatus("Failed to load SKU for delete.", false);
@@ -4217,7 +8229,7 @@ void MainWindow::deleteSelectedSku() {
     }
 
     QString comment;
-    if (!promptAdminAuthorization("Delete SKU", &comment, false)) {
+    if (!promptAdminAuthorization("Delete SKU", &comment, true)) {
         return;
     }
 
@@ -4227,7 +8239,7 @@ void MainWindow::deleteSelectedSku() {
         "SELECT sku, part_number, part_name, category_code, sub_category, item_serial, unique_variation, "
         "description, storage, rack_number, bin_number, dimensions, weight_value, weight_unit, "
         "product_family, image_blob, image_path, comments "
-        "FROM sku_catalog WHERE id = ?");
+        "FROM sku_catalog WHERE id = ? AND COALESCE(is_deleted, 0) = 0");
     oldFetch.addBindValue(m_selectedId);
     if (oldFetch.exec() && oldFetch.next()) {
         QJsonObject oldValue;
@@ -4258,16 +8270,41 @@ void MainWindow::deleteSelectedSku() {
 
     m_db.transaction();
     QSqlQuery delSku(m_db);
-    delSku.prepare("DELETE FROM sku_catalog WHERE id = ?");
+    delSku.prepare(
+        "UPDATE sku_catalog SET "
+        "is_deleted = 1, deleted_at = ?, deleted_by = ?, delete_reason = ?, deleted_snapshot = ? "
+        "WHERE id = ? AND COALESCE(is_deleted, 0) = 0");
+    delSku.addBindValue(QDateTime::currentDateTime().toString(Qt::ISODate));
+    delSku.addBindValue(m_currentUsername);
+    delSku.addBindValue(comment);
+    delSku.addBindValue(oldValueJson);
     delSku.addBindValue(m_selectedId);
     if (!delSku.exec()) {
         m_db.rollback();
         setStatus("Failed to delete SKU.", false);
+        logAction("SKU_DELETE",
+                  sku,
+                  oldValueJson,
+                  QString(),
+                  "Failed to delete SKU.",
+                  "SKU Master",
+                  "DELETE",
+                  false,
+                  delSku.lastError().text(),
+                  sku);
         return;
     }
 
     QSqlQuery delSerials(m_db);
-    delSerials.prepare("DELETE FROM barcode_log WHERE sku = ?");
+    const QString serialSnapshot = QString("{\"sku\":\"%1\",\"deleted_by_sku\":true}").arg(sku);
+    delSerials.prepare(
+        "UPDATE barcode_log SET "
+        "is_deleted = 1, deleted_at = ?, deleted_by = ?, delete_reason = ?, deleted_snapshot = ? "
+        "WHERE sku = ? AND COALESCE(is_deleted, 0) = 0");
+    delSerials.addBindValue(QDateTime::currentDateTime().toString(Qt::ISODate));
+    delSerials.addBindValue(m_currentUsername);
+    delSerials.addBindValue(comment);
+    delSerials.addBindValue(serialSnapshot);
     delSerials.addBindValue(sku);
     delSerials.exec();
 
@@ -4278,7 +8315,16 @@ void MainWindow::deleteSelectedSku() {
 
     m_db.commit();
 
-    logAction("SKU_DELETE", sku, oldValueJson, QString(), comment);
+    logAction("SKU_DELETE",
+              sku,
+              oldValueJson,
+              QString(),
+              comment,
+              "SKU Master",
+              "DELETE",
+              true,
+              QString(),
+              sku);
 
     setStatus(QString("Deleted SKU %1.").arg(sku), true);
     m_selectedId = 0;
@@ -4473,7 +8519,7 @@ void MainWindow::loadImageForSelectedId(int id) {
     }
 
     QSqlQuery q(m_db);
-    q.prepare("SELECT image_blob, image_path FROM sku_catalog WHERE id = ?");
+    q.prepare("SELECT image_blob, image_path FROM sku_catalog WHERE id = ? AND COALESCE(is_deleted, 0) = 0");
     q.addBindValue(id);
     if (q.exec() && q.next()) {
         m_imageBytes = q.value(0).toByteArray();
@@ -4490,7 +8536,7 @@ void MainWindow::refreshBarcodeSerialTracker(const QString &sku, int year, int q
     }
 
     QSqlQuery maxq(m_db);
-    maxq.prepare("SELECT MAX(serial) FROM barcode_log WHERE sku = ? AND year = ? AND quarter = ?");
+    maxq.prepare("SELECT MAX(serial) FROM barcode_log_active WHERE sku = ? AND year = ? AND quarter = ?");
     maxq.addBindValue(sku);
     maxq.addBindValue(year);
     maxq.addBindValue(quarter);
@@ -4612,4 +8658,3 @@ QString MainWindow::dbPath() const {
 QString MainWindow::imagesDirPath() const {
     return AppSettings::imagesDirPath();
 }
-
