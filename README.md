@@ -3,9 +3,9 @@
 Qt/C++ desktop app for SKU catalog management, QR generation, and print/export workflows, backed by SQLite.
 
 ## Version Details
-- Current application version: `1.0.0`
+- Current application version: `1.1.0`
 - Version source: `installer/warehouse_sku_generator.iss` (`AppVersion`) and `installer/build-installer.ps1` (`-AppVersion` default)
-- Latest release baseline in repo history: `1.0.0` on `2026-02-16`
+- Latest release baseline in repo history: `1.1.0` on `2026-07-14`
 - Changelog: [`CHANGELOG.md`](CHANGELOG.md)
 
 ## Tag Strategy

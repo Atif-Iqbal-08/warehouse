@@ -17,7 +17,18 @@
       "Bash(\"/c/Qt/Tools/mingw1310_64/bin/mingw32-make.exe\" -j4)",
       "Bash(powershell -NoProfile -ExecutionPolicy Bypass -File installer/build-installer.ps1 -SkipBuild -QtBinDir \"C:\\\\Qt\\\\6.9.3\\\\mingw_64\\\\bin\")",
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(Get-ChildItem -Path \"d:\\\\Skylark Projects\\\\Warehouse Bar Code generator\" -Recurse -File)",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(Head -50)",
+      "Bash(mingw32-make clean *)",
+      "Bash(mingw32-make debug *)",
+      "Bash(Start-Process \"d:\\\\Skylark Projects\\\\Warehouse Bar Code generator\\\\build-qmake\\\\debug\\\\warehouse_sku_generator.exe\")",
+      "PowerShell(Start-Process \"d:\\\\Skylark Projects\\\\Warehouse Bar Code generator\\\\build-qmake\\\\debug\\\\warehouse_sku_generator.exe\")",
+      "PowerShell(Stop-Process -Name \"warehouse_sku_generator\" -Force -ErrorAction SilentlyContinue)",
+      "Bash(grep -E \"error:|warning:.*mainwindow|\\\\.exe$|Leaving\")",
+      "Bash(grep -E \"error:|\\\\.exe$|Leaving\")",
+      "Bash(start warehouse_sku_generator.exe)"
     ]
   }
 }

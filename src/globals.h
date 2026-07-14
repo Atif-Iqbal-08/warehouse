@@ -6,7 +6,7 @@ namespace AppGlobals {
 // Centralized labels and folder names keep the UI, installer and runtime storage
 // logic aligned without scattering string literals across the app.
 inline QString appName() { return QStringLiteral("Warehouse SKU Generator"); }
-inline QString appVersion() { return QStringLiteral("1.0.0"); }
+inline QString appVersion() { return QStringLiteral("1.1.0"); }
 inline QString organizationName() { return QStringLiteral("Skylark Drones"); }
 
 inline QString dataFolderName() { return QStringLiteral("data"); }

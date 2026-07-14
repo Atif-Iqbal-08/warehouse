@@ -3,7 +3,6 @@
 #include "app_settings.h"
 #include "globals.h"
 #include "qrcodegen.hpp"
-#include <QActionGroup>
 #include <QAbstractItemView>
 #include <QAbstractButton>
 #include <QComboBox>
@@ -13,6 +12,7 @@
 #include <QDateTime>
 #include <QDateEdit>
 #include <QCryptographicHash>
+#include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
@@ -76,6 +76,7 @@
 #include <QTextStream>
 #include <QTemporaryFile>
 #include <QUuid>
+#include <QUrl>
 #include <QApplication>
 #include <QGridLayout>
 #include <QGraphicsDropShadowEffect>
@@ -93,7 +94,7 @@
 #include <QSettings>
 #include <QSharedPointer>
 #include <QStatusBar>
-#include <QStyleHints>
+#include <QStyle>
 #include <exception>
 
 #ifdef Q_OS_WIN
@@ -390,60 +391,45 @@ bool hasCommandLineFlag(const QStringList &args, const QString &name) {
     return false;
 }
 
-QString themePreferenceKey() {
-    return QStringLiteral("ui/theme");
-}
-
-bool systemPrefersDarkTheme() {
-#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
-    return qApp && qApp->styleHints() && qApp->styleHints()->colorScheme() == Qt::ColorScheme::Dark;
-#else
-    return qApp && qApp->palette().color(QPalette::Window).lightness() < 128;
-#endif
-}
-
-QString tableSelectionStyleSheet(bool darkTheme) {
-    return darkTheme
-               ? QStringLiteral(R"(
+QString tableSelectionStyleSheet() {
+    return QStringLiteral(R"(
 QTableView {
     selection-background-color: #ff7c38;
-    selection-color: #111118;
+    selection-color: #141414;
 }
 QTableView::item:selected {
     background: #ff7c38;
-    color: #111118;
+    color: #141414;
 }
 QTableView::item:selected:!active {
     background: #c85a1a;
-    color: #e8e8f0;
-}
-)")
-               : QStringLiteral(R"(
-QTableView {
-    selection-background-color: #dd6000;
-    selection-color: #ffffff;
-}
-QTableView::item:selected {
-    background: #dd6000;
-    color: #ffffff;
-}
-QTableView::item:selected:!active {
-    background: #f07820;
-    color: #ffffff;
+    color: #eaeaea;
 }
 )");
 }
 
-QString highlightedSkuFieldStyle(bool darkTheme) {
-    return darkTheme
-               ? QStringLiteral("QLineEdit { font-size: 15px; font-weight: 700; color: #ff7c38; border: 1px solid #2e2e42; background-color: #1e1e2b; border-radius: 7px; padding: 5px 10px; }")
-               : QStringLiteral("QLineEdit { font-size: 15px; font-weight: 700; color: #c85000; border: 1px solid #d0d0e0; background-color: #ffffff; border-radius: 7px; padding: 5px 10px; }");
+QString highlightedSkuFieldStyle() {
+    return QStringLiteral("QLineEdit { font-size: 15px; font-weight: 700; color: #ff7c38; border: 1px solid #383838; background-color: #202020; border-radius: 7px; padding: 5px 10px; }");
 }
 
-QString versionLabelStyle(bool darkTheme) {
-    return darkTheme
-               ? QStringLiteral("QLabel { color: #58587a; padding-right: 6px; font-weight: 500; font-size: 9pt; }")
-               : QStringLiteral("QLabel { color: #9898b8; padding-right: 6px; font-weight: 500; font-size: 9pt; }");
+QString versionLabelStyle() {
+    return QStringLiteral("QLabel { color: #6e6e6e; padding-right: 6px; font-weight: 500; font-size: 9pt; }");
+}
+
+// Clamps a dialog's minimum and preferred size to the available screen so that,
+// on small/high-DPI-scaled displays (e.g. 14" laptops at 150% scaling), buttons
+// and controls near the bottom/edges of the dialog never end up pushed off-screen.
+void sizeDialogToScreen(QWidget *dialog, QWidget *anchor, int preferredWidth, int preferredHeight,
+                        int minWidth, int minHeight) {
+    if (!dialog) {
+        return;
+    }
+    const QScreen *screen = (anchor && anchor->screen()) ? anchor->screen() : QGuiApplication::primaryScreen();
+    const QRect avail = screen ? screen->availableGeometry() : QRect(0, 0, preferredWidth, preferredHeight);
+    const int maxWidth = qMax(320, static_cast<int>(avail.width() * 0.92));
+    const int maxHeight = qMax(240, static_cast<int>(avail.height() * 0.88));
+    dialog->setMinimumSize(qMin(minWidth, maxWidth), qMin(minHeight, maxHeight));
+    dialog->resize(qMin(preferredWidth, maxWidth), qMin(preferredHeight, maxHeight));
 }
 
 QString g_runLogUsername = QStringLiteral("anonymous");
@@ -1441,8 +1427,7 @@ void MainWindow::showSettingsDialog() {
     QDialog dialog(this);
     dialog.setWindowTitle("Settings");
     dialog.setSizeGripEnabled(true);
-    dialog.setMinimumSize(900, 620);
-    dialog.resize(1180, 760);
+    sizeDialogToScreen(&dialog, this, 1180, 760, 900, 620);
     QVBoxLayout *layout = new QVBoxLayout(&dialog);
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(8);
@@ -1990,9 +1975,7 @@ void MainWindow::showUserAccountsDialog() {
 
 void MainWindow::showSkuDetailsDialog(const QString &sku) {
     const QString trimmedSku = sku.trimmed().toUpper();
-    if (trimmedSku.isEmpty()) {
-        return;
-    }
+    if (trimmedSku.isEmpty()) return;
 
     QSqlQuery q(m_db);
     q.prepare(
@@ -2007,62 +1990,145 @@ void MainWindow::showSkuDetailsDialog(const QString &sku) {
     }
 
     QDialog dialog(this);
-    dialog.setWindowTitle(QString("SKU Details - %1").arg(trimmedSku));
-    dialog.setMinimumSize(640, 420);
+    dialog.setWindowTitle(QString("Product Information  —  %1").arg(trimmedSku));
+    sizeDialogToScreen(&dialog, this, 1000, 680, 900, 620);
+    dialog.setSizeGripEnabled(true);
 
-    auto *rootLayout = new QHBoxLayout(&dialog);
-    rootLayout->setContentsMargins(16, 16, 16, 16);
-    rootLayout->setSpacing(16);
+    // ── root: image left | details right ─────────────────────────────────────
+    auto *root = new QHBoxLayout(&dialog);
+    root->setContentsMargins(18, 18, 18, 18);
+    root->setSpacing(20);
 
-    auto *imageLabel = new QLabel(&dialog);
-    imageLabel->setFixedSize(200, 200);
-    imageLabel->setAlignment(Qt::AlignCenter);
-    imageLabel->setFrameShape(QFrame::StyledPanel);
-    loadImageLabelFromData(imageLabel, q.value(15).toByteArray(), q.value(16).toString(), AppGlobals::noImageText());
+    // ── LEFT: zoomable product image ──────────────────────────────────────────
+    auto *imageView = new ZoomableImageView(&dialog);
+    imageView->setMinimumSize(340, 340);
+    imageView->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    imageView->setObjectName("skuDetailImageView");
+    imageView->setStyleSheet("background-color:#1a1a1a; border:1px solid #383838; border-radius:10px;");
 
-    auto makeValueLabel = [&dialog](const QString &text) {
-        auto *label = new QLabel(text, &dialog);
-        label->setWordWrap(true);
-        label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        return label;
+    const QByteArray blob = q.value(15).toByteArray();
+    const QString legacyPath = q.value(16).toString();
+    QPixmap px;
+    if (!blob.isEmpty()) {
+        px.loadFromData(blob);
+    } else if (!legacyPath.isEmpty()) {
+        px.load(resolveImagePath(legacyPath));
+    }
+    if (px.isNull()) {
+        imageView->setImage(QPixmap());
+    } else {
+        imageView->setImage(px);
+    }
+
+    // ── RIGHT: scrollable detail panel ───────────────────────────────────────
+    auto *scrollArea = new QScrollArea(&dialog);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // Never let the viewport paint a palette background; the dialog's dark
+    // stylesheet background must show through even if the OS palette changes.
+    scrollArea->viewport()->setAutoFillBackground(false);
+
+    auto *detailWidget = new QWidget(scrollArea);
+    detailWidget->setAutoFillBackground(false);
+    auto *detailLayout = new QVBoxLayout(detailWidget);
+    detailLayout->setSpacing(12);
+    detailLayout->setContentsMargins(4, 4, 12, 4);
+
+    // Part name as a header
+    const QString partName = q.value(1).toString();
+    auto *titleLabel = new QLabel(partName, detailWidget);
+    titleLabel->setWordWrap(true);
+    titleLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    QFont titleFont = titleLabel->font();
+    titleFont.setPointSize(14);
+    titleFont.setBold(true);
+    titleLabel->setFont(titleFont);
+    titleLabel->setObjectName("skuDetailTitle");
+    detailLayout->addWidget(titleLabel);
+
+    auto *divider = new QFrame(detailWidget);
+    divider->setFrameShape(QFrame::HLine);
+    divider->setObjectName("skuDetailDivider");
+    detailLayout->addWidget(divider);
+
+    // ── Quick-info grid (two columns) ─────────────────────────────────────────
+    auto *grid = new QGridLayout();
+    grid->setHorizontalSpacing(20);
+    grid->setVerticalSpacing(6);
+
+    auto addField = [&](int row, int col, const QString &label, const QString &value) {
+        auto *lbl = new QLabel(label + ":", detailWidget);
+        lbl->setObjectName("skuDetailFieldLabel");
+        QFont lf = lbl->font();
+        lf.setBold(true);
+        lf.setPointSize(9);
+        lbl->setFont(lf);
+
+        auto *val = new QLabel(value.isEmpty() ? "—" : value, detailWidget);
+        val->setWordWrap(true);
+        val->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        val->setObjectName("skuDetailFieldValue");
+
+        grid->addWidget(lbl, row, col * 2);
+        grid->addWidget(val, row, col * 2 + 1);
     };
 
-    auto *detailsLayout = new QVBoxLayout();
-    detailsLayout->setSpacing(10);
+    const QString weight = QString("%1 %2").arg(q.value(12).toString(), q.value(13).toString()).trimmed();
+    addField(0, 0, "SKU",            q.value(0).toString());
+    addField(0, 1, "Part Number",    q.value(2).toString());
+    addField(1, 0, "Category",       q.value(3).toString());
+    addField(1, 1, "Sub-Category",   q.value(4).toString());
+    addField(2, 0, "Item Serial",    q.value(5).toString());
+    addField(2, 1, "Variation",      q.value(6).toString());
+    addField(3, 0, "Dimensions",     q.value(11).toString());
+    addField(3, 1, "Weight",         weight);
+    addField(4, 0, "Storage Zone",   q.value(8).toString());
+    addField(4, 1, "Product Family", q.value(14).toString());
+    addField(5, 0, "Rack Number",    q.value(9).toString());
+    addField(5, 1, "Bin Number",     q.value(10).toString());
+    addField(6, 0, "Created At",     q.value(18).toString());
 
-    auto *formLayout = new QFormLayout();
-    formLayout->setLabelAlignment(Qt::AlignLeft);
-    formLayout->setFormAlignment(Qt::AlignTop);
-    formLayout->setHorizontalSpacing(16);
-    formLayout->setVerticalSpacing(6);
+    grid->setColumnStretch(1, 1);
+    grid->setColumnStretch(3, 1);
+    detailLayout->addLayout(grid);
 
-    formLayout->addRow("SKU", makeValueLabel(q.value(0).toString()));
-    formLayout->addRow("Part Name", makeValueLabel(q.value(1).toString()));
-    formLayout->addRow("Part Number", makeValueLabel(q.value(2).toString()));
-    formLayout->addRow("Category", makeValueLabel(q.value(3).toString()));
-    formLayout->addRow("Sub Category", makeValueLabel(q.value(4).toString()));
-    formLayout->addRow("Item Serial", makeValueLabel(q.value(5).toString()));
-    formLayout->addRow("Variation", makeValueLabel(q.value(6).toString()));
-    formLayout->addRow("Dimensions", makeValueLabel(q.value(11).toString()));
-    const QString weightDisplay = QString("%1 %2").arg(q.value(12).toString(), q.value(13).toString());
-    formLayout->addRow("Weight", makeValueLabel(weightDisplay.trimmed()));
-    formLayout->addRow("Storage", makeValueLabel(q.value(8).toString()));
-    formLayout->addRow("Rack Number", makeValueLabel(q.value(9).toString()));
-    formLayout->addRow("Bin Number", makeValueLabel(q.value(10).toString()));
-    formLayout->addRow("Product Family", makeValueLabel(q.value(14).toString()));
-    formLayout->addRow("Description", makeValueLabel(q.value(7).toString()));
-    formLayout->addRow("Comments", makeValueLabel(q.value(17).toString()));
-    formLayout->addRow("Created At", makeValueLabel(q.value(18).toString()));
+    auto addTextSection = [&](const QString &heading, const QString &content) {
+        auto *hdr = new QLabel(heading, detailWidget);
+        hdr->setObjectName("skuDetailSectionHeader");
+        QFont hf = hdr->font();
+        hf.setBold(true);
+        hf.setPointSize(10);
+        hdr->setFont(hf);
+        detailLayout->addWidget(hdr);
 
-    detailsLayout->addLayout(formLayout);
-    detailsLayout->addStretch(1);
+        auto *box = new QPlainTextEdit(detailWidget);
+        box->setPlainText(content.isEmpty() ? "—" : content);
+        box->setReadOnly(true);
+        box->setMinimumHeight(90);
+        box->setMaximumHeight(140);
+        box->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        box->setObjectName("skuDetailTextBox");
+        detailLayout->addWidget(box);
+    };
 
+    addTextSection("Description", q.value(7).toString());
+    addTextSection("Comments",    q.value(17).toString());
+
+    detailLayout->addStretch(1);
+    scrollArea->setWidget(detailWidget);
+
+    // ── Close button ─────────────────────────────────────────────────────────
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    detailsLayout->addWidget(buttons);
 
-    rootLayout->addWidget(imageLabel);
-    rootLayout->addLayout(detailsLayout, 1);
+    auto *rightPanel = new QVBoxLayout();
+    rightPanel->setSpacing(10);
+    rightPanel->addWidget(scrollArea, 1);
+    rightPanel->addWidget(buttons);
+
+    root->addWidget(imageView, 1);
+    root->addLayout(rightPanel, 1);
 
     dialog.exec();
 }
@@ -2902,6 +2968,18 @@ void MainWindow::setupUi() {
     ui = new Ui::MainWindow;
     ui->setupUi(this);
 
+    // Cap the left control panels to ~1/3 so the table gets the remaining 2/3.
+    // setMaximumWidth is needed because form widget minimums override stretch alone.
+    // On compact displays (14" laptops at 150% scaling => ~1280 logical px wide)
+    // tighten the caps so the tables keep a usable share of the window.
+    const QScreen *setupScreen = screen() ? screen() : QGuiApplication::primaryScreen();
+    const QRect setupAvail = setupScreen ? setupScreen->availableGeometry() : QRect(0, 0, 1920, 1080);
+    const bool compactUi = setupAvail.width() < 1500 || setupAvail.height() < 800;
+    const int panelMaxWidth = compactUi ? 350 : 420;
+    ui->barcodeGroupBox->setMaximumWidth(panelMaxWidth);
+    ui->barcodeSkuDetailsGroupBox->setMaximumWidth(panelMaxWidth);
+    ui->historySkuGroupBox->setMaximumWidth(panelMaxWidth);
+
     if (ui->centralwidget && ui->centralwidget->layout()) {
         if (auto *mainLayout = qobject_cast<QVBoxLayout *>(ui->centralwidget->layout())) {
             m_noDbBannerLabel = new QLabel(ui->centralwidget);
@@ -2913,162 +2991,109 @@ void MainWindow::setupUi() {
         }
     }
 
-    // ── DARK THEME ────────────────────────────────────────────────────────────
-    // Deep navy-charcoal base with warm orange accents. Clean, flat, modern.
-    // Palette: bg #111118 · surface #16161f · elevated #1e1e2b · border #2e2e42
-    //          text #e8e8f0 · muted #7878a0 · accent #ff7c38 · blue #4a8af7
+    // ── DARK THEME (fixed) ─────────────────────────────────────────────────────
+    // Neutral gray base with a single warm-orange highlight/accent color. This is
+    // the app's only theme — there is no theme switcher.
+    // Palette: bg #141414 · surface #1a1a1a · elevated #202020 · border #383838
+    //          text #eaeaea · muted #969696 · accent/highlight #ff7c38
     const QString darkTheme = QStringLiteral(R"(
-QMainWindow { background-color: #111118; color: #e8e8f0; }
-QWidget { color: #e8e8f0; font-family: "Segoe UI", "Inter", sans-serif; font-size: 10pt; }
-QDialog { background-color: #16161f; color: #e8e8f0; }
-QGroupBox { background-color: #16161f; border: 1px solid #2e2e42; border-radius: 9px; margin-top: 20px; padding-top: 10px; }
-QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #ff7c38; font-weight: 600; font-size: 9pt; }
-QLineEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox { background-color: #1e1e2b; border: 1px solid #2e2e42; border-radius: 6px; padding: 6px 10px; color: #e8e8f0; selection-background-color: #ff7c38; selection-color: #111118; min-height: 16px; }
-QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border: 1.5px solid #4a8af7; background-color: #21212e; }
-QLineEdit:read-only { color: #7878a0; background-color: #16161f; }
-QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled { color: #44445a; background-color: #16161f; border-color: #22222e; }
+QMainWindow { background-color: #141414; color: #eaeaea; }
+QWidget { color: #eaeaea; font-family: "Segoe UI", "Inter", sans-serif; font-size: 10pt; }
+QDialog { background-color: #1a1a1a; color: #eaeaea; }
+QGroupBox { background-color: #1a1a1a; border: 1px solid #383838; border-radius: 9px; margin-top: 18px; padding-top: 8px; }
+QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #ff7c38; font-weight: 700; font-size: 9pt; }
+QLineEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox, QDateEdit { background-color: #202020; border: 1px solid #3a3a3a; border-radius: 6px; padding: 5px 9px; color: #eaeaea; selection-background-color: #ff7c38; selection-color: #141414; min-height: 15px; }
+QLineEdit:hover, QPlainTextEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover, QDateEdit:hover { border-color: #4f4f4f; }
+QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QDateEdit:focus { border: 1.5px solid #ff7c38; background-color: #242424; }
+QLineEdit:read-only { color: #969696; background-color: #1a1a1a; }
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled { color: #454545; background-color: #1a1a1a; border-color: #262626; }
 QComboBox::drop-down { border: none; width: 22px; }
-QComboBox QAbstractItemView, QListView { background-color: #1e1e2b; border: 1px solid #2e2e42; color: #e8e8f0; selection-background-color: #ff7c38; selection-color: #111118; padding: 2px; outline: none; }
-QTableView { background-color: #111118; alternate-background-color: #141420; gridline-color: #1c1c28; border: 1px solid #2e2e42; border-radius: 8px; color: #e8e8f0; }
-QTableView::item { padding: 5px 8px; color: #e8e8f0; }
-QTableView::item:hover { background-color: #1e1e2b; }
-QHeaderView::section, QTableCornerButton::section { background-color: #16161f; color: #7878a0; border: none; border-bottom: 1px solid #2e2e42; border-right: 1px solid #2e2e42; padding: 6px 8px; font-weight: 600; font-size: 9pt; }
+QComboBox QAbstractItemView, QListView { background-color: #202020; border: 1px solid #383838; color: #eaeaea; selection-background-color: #ff7c38; selection-color: #141414; padding: 2px; outline: none; }
+QTableView { background-color: #141414; alternate-background-color: #181818; gridline-color: #1e1e1e; border: 1px solid #383838; border-radius: 8px; color: #eaeaea; }
+QTableView::item { padding: 4px 7px; color: #eaeaea; }
+QTableView::item:hover { background-color: #202020; }
+QHeaderView::section, QTableCornerButton::section { background-color: #1a1a1a; color: #a8a8a8; border: none; border-bottom: 2px solid #ff7c38; border-right: 1px solid #383838; padding: 5px 7px; font-weight: 700; font-size: 9pt; }
 QHeaderView::section:last { border-right: none; }
-QPushButton { background-color: #1e1e2b; border: 1px solid #2e2e42; border-radius: 6px; padding: 7px 14px; font-weight: 600; color: #c8c8e0; min-height: 14px; }
-QPushButton:hover { background-color: #252538; border-color: #3e3e5a; color: #e8e8f0; }
-QPushButton:pressed { background-color: #16161f; border-color: #2e2e42; }
-QPushButton:disabled { background-color: #16161f; color: #38384e; border-color: #1e1e2b; }
-QPushButton#dashboardSearchButton, QPushButton#searchButton, QPushButton#generateBarcodeButton, QPushButton#saveButton, QPushButton#printBarcodeButton, QPushButton#backupDbButton, QPushButton#historyRefreshButton { background-color: #ff7c38; border: none; border-radius: 6px; color: #111118; font-weight: 700; }
-QPushButton#dashboardSearchButton:hover, QPushButton#searchButton:hover, QPushButton#generateBarcodeButton:hover, QPushButton#saveButton:hover, QPushButton#printBarcodeButton:hover, QPushButton#backupDbButton:hover, QPushButton#historyRefreshButton:hover { background-color: #ff9355; }
-QPushButton#dashboardSearchButton:pressed, QPushButton#searchButton:pressed, QPushButton#generateBarcodeButton:pressed, QPushButton#saveButton:pressed, QPushButton#printBarcodeButton:pressed, QPushButton#backupDbButton:pressed, QPushButton#historyRefreshButton:pressed { background-color: #d95e1c; }
-QPushButton#dashboardSearchButton:disabled, QPushButton#searchButton:disabled, QPushButton#generateBarcodeButton:disabled, QPushButton#saveButton:disabled, QPushButton#printBarcodeButton:disabled { background-color: #2e2010; color: #5a3a1a; border: none; }
-QPushButton#updateButton, QPushButton#fillFromSearchButton, QPushButton#historyEditButton, QPushButton#browseImageButton { background-color: #4a8af7; border: none; border-radius: 6px; color: #ffffff; font-weight: 700; }
-QPushButton#updateButton:hover, QPushButton#fillFromSearchButton:hover, QPushButton#historyEditButton:hover, QPushButton#browseImageButton:hover { background-color: #6aa1ff; }
-QPushButton#updateButton:pressed, QPushButton#fillFromSearchButton:pressed, QPushButton#historyEditButton:pressed, QPushButton#browseImageButton:pressed { background-color: #2e6cd4; }
-QPushButton#deleteSkuButton, QPushButton#deleteBarcodeButton, QPushButton#historyDeleteButton { background-color: #e84848; border: none; border-radius: 6px; color: #ffffff; font-weight: 700; }
-QPushButton#deleteSkuButton:hover, QPushButton#deleteBarcodeButton:hover, QPushButton#historyDeleteButton:hover { background-color: #f06060; }
-QPushButton#deleteSkuButton:pressed, QPushButton#deleteBarcodeButton:pressed, QPushButton#historyDeleteButton:pressed { background-color: #c02828; }
-QPushButton#clearSearchButton, QPushButton#clearFormButton, QPushButton#clearBarcodeFieldsButton, QPushButton#historyClearFieldsButton { background-color: transparent; border: 1px solid #2e2e42; color: #7878a0; }
-QPushButton#clearSearchButton:hover, QPushButton#clearFormButton:hover, QPushButton#clearBarcodeFieldsButton:hover, QPushButton#historyClearFieldsButton:hover { background-color: #1e1e2b; color: #c8c8e0; border-color: #3e3e5a; }
-QTabWidget::pane { border: 1px solid #2e2e42; border-radius: 9px; top: -1px; background: #16161f; }
-QTabBar::tab { background: transparent; color: #7878a0; padding: 8px 18px; border-top-left-radius: 7px; border-top-right-radius: 7px; margin-right: 2px; border: 1px solid transparent; font-weight: 600; font-size: 9.5pt; }
-QTabBar::tab:selected { background: #16161f; color: #ff7c38; border: 1px solid #2e2e42; border-bottom-color: #16161f; font-weight: 700; }
-QTabBar::tab:hover:!selected { background: #1a1a28; color: #c8c8e0; }
-QMenuBar { background-color: #111118; color: #e8e8f0; border-bottom: 1px solid #2e2e42; }
+QPushButton { background-color: #232323; border: 1px solid #3d3d3d; border-radius: 6px; padding: 6px 12px; font-weight: 600; color: #d6d6d6; min-height: 13px; }
+QPushButton:hover { background-color: #2d2d2d; border-color: #ff7c38; color: #ffffff; }
+QPushButton:pressed { background-color: #1a1a1a; border-color: #383838; }
+QPushButton:disabled { background-color: #1a1a1a; color: #454545; border-color: #202020; }
+QPushButton#generateBarcodeButton, QPushButton#historyRefreshButton, QPushButton#searchButton, QPushButton#backupDbButton, QPushButton#dashboardSearchButton { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #ff8c48,stop:1 #f06820); border: 1px solid #b84810; border-bottom: 3px solid #883000; border-radius: 7px; color: #141414; font-weight: 700; padding: 7px 16px 5px; }
+QPushButton#generateBarcodeButton:hover, QPushButton#historyRefreshButton:hover, QPushButton#searchButton:hover, QPushButton#backupDbButton:hover, QPushButton#dashboardSearchButton:hover { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #ffa060,stop:1 #ff8040); border-color: #d87030; border-bottom-color: #a84810; }
+QPushButton#generateBarcodeButton:pressed, QPushButton#historyRefreshButton:pressed, QPushButton#searchButton:pressed, QPushButton#backupDbButton:pressed, QPushButton#dashboardSearchButton:pressed { background: #d06010; border-bottom-width: 1px; padding: 9px 16px 5px; }
+QPushButton#generateBarcodeButton:disabled, QPushButton#historyRefreshButton:disabled, QPushButton#searchButton:disabled, QPushButton#backupDbButton:disabled, QPushButton#dashboardSearchButton:disabled { background: #281808; color: #604020; border: 1px solid #281808; }
+QPushButton#saveButton { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #48c880,stop:1 #28a060); border: 1px solid #188040; border-bottom: 3px solid #0c6030; border-radius: 7px; color: #ffffff; font-weight: 700; padding: 7px 16px 5px; }
+QPushButton#saveButton:hover { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #60d898,stop:1 #40b878); border-color: #28a060; border-bottom-color: #1a7840; }
+QPushButton#saveButton:pressed { background: #20904a; border-bottom-width: 1px; padding: 9px 16px 5px; }
+QPushButton#saveButton:disabled { background: #0a1a10; color: #2a5030; border: 1px solid #0a1a10; }
+QPushButton#printBarcodeButton { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #20c8b8,stop:1 #0ea898); border: 1px solid #088880; border-bottom: 3px solid #046858; border-radius: 7px; color: #ffffff; font-weight: 700; padding: 7px 16px 5px; }
+QPushButton#printBarcodeButton:hover { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #38d8c8,stop:1 #20b8a8); border-color: #10a090; border-bottom-color: #087868; }
+QPushButton#printBarcodeButton:pressed { background: #089080; border-bottom-width: 1px; padding: 9px 16px 5px; }
+QPushButton#printBarcodeButton:disabled { background: #061410; color: #1a3830; border: 1px solid #061410; }
+QPushButton#updateButton, QPushButton#fillFromSearchButton, QPushButton#historyEditButton, QPushButton#browseImageButton { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #5a9aff,stop:1 #3070e8); border: 1px solid #2050c8; border-bottom: 3px solid #1038a0; border-radius: 7px; color: #ffffff; font-weight: 700; padding: 7px 16px 5px; }
+QPushButton#updateButton:hover, QPushButton#fillFromSearchButton:hover, QPushButton#historyEditButton:hover, QPushButton#browseImageButton:hover { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #78b0ff,stop:1 #4888f8); border-color: #3868e0; border-bottom-color: #2050c0; }
+QPushButton#updateButton:pressed, QPushButton#fillFromSearchButton:pressed, QPushButton#historyEditButton:pressed, QPushButton#browseImageButton:pressed { background: #1c58d0; border-bottom-width: 1px; padding: 9px 16px 5px; }
+QPushButton#updateButton:disabled, QPushButton#fillFromSearchButton:disabled, QPushButton#historyEditButton:disabled, QPushButton#browseImageButton:disabled { background: #080c20; color: #202848; border: 1px solid #080c20; }
+QPushButton#deleteSkuButton, QPushButton#deleteBarcodeButton, QPushButton#historyDeleteButton { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #f06060,stop:1 #d02828); border: 1px solid #a81818; border-bottom: 3px solid #800808; border-radius: 7px; color: #ffffff; font-weight: 700; padding: 7px 16px 5px; }
+QPushButton#deleteSkuButton:hover, QPushButton#deleteBarcodeButton:hover, QPushButton#historyDeleteButton:hover { background: qlineargradient(x1:0,y1:0,x2:0,y2:1,stop:0 #ff7878,stop:1 #e84040); border-color: #c02020; border-bottom-color: #981010; }
+QPushButton#deleteSkuButton:pressed, QPushButton#deleteBarcodeButton:pressed, QPushButton#historyDeleteButton:pressed { background: #b81818; border-bottom-width: 1px; padding: 9px 16px 5px; }
+QPushButton#deleteSkuButton:disabled, QPushButton#deleteBarcodeButton:disabled, QPushButton#historyDeleteButton:disabled { background: #180606; color: #402020; border: 1px solid #180606; }
+QPushButton#clearSearchButton, QPushButton#clearFormButton, QPushButton#clearBarcodeFieldsButton, QPushButton#historyClearFieldsButton { background: transparent; border: 1px solid #444444; border-radius: 6px; color: #969696; padding: 7px 14px; }
+QPushButton#clearSearchButton:hover, QPushButton#clearFormButton:hover, QPushButton#clearBarcodeFieldsButton:hover, QPushButton#historyClearFieldsButton:hover { background: #202020; color: #d0d0d0; border-color: #5a5a5a; }
+QPushButton#clearSearchButton:pressed, QPushButton#clearFormButton:pressed, QPushButton#clearBarcodeFieldsButton:pressed, QPushButton#historyClearFieldsButton:pressed { background: #181818; }
+QTabWidget::pane { border: 1px solid #383838; border-radius: 9px; top: -1px; background: #1a1a1a; }
+QTabBar::tab { background: transparent; color: #969696; padding: 7px 15px; border-top-left-radius: 7px; border-top-right-radius: 7px; margin-right: 2px; border: 1px solid transparent; font-weight: 600; font-size: 9.5pt; }
+QTabBar::tab:selected { background: #1a1a1a; color: #ff7c38; border: 1px solid #383838; border-top: 2px solid #ff7c38; border-bottom-color: #1a1a1a; font-weight: 700; }
+QTabBar::tab:hover:!selected { background: #202020; color: #cccccc; }
+QMenuBar { background-color: #141414; color: #eaeaea; border-bottom: 1px solid #383838; }
 QMenuBar::item { background: transparent; padding: 5px 10px; border-radius: 5px; }
-QMenuBar::item:selected { background: #1e1e2b; }
-QMenu { background-color: #16161f; color: #e8e8f0; border: 1px solid #2e2e42; border-radius: 8px; padding: 4px 0; }
-QMenu::item { padding: 6px 20px; border-radius: 4px; margin: 1px 4px; }
-QMenu::item:selected { background: #252538; }
-QMenu::separator { height: 1px; background: #2e2e42; margin: 4px 8px; }
-QStatusBar { background-color: #111118; border-top: 1px solid #2e2e42; color: #58587a; font-size: 9pt; }
-QToolTip { background-color: #252538; color: #e8e8f0; border: 1px solid #3e3e5a; border-radius: 5px; padding: 4px 8px; font-size: 9pt; }
+QMenuBar::item:selected { background: #202020; }
+QMenu { background-color: #1a1a1a; color: #eaeaea; border: 1px solid #383838; border-radius: 8px; padding: 4px 0; }
+QMenu::item { padding: 5px 18px; border-radius: 4px; margin: 1px 4px; }
+QMenu::item:selected { background: #2d2d2d; color: #ff9a5e; }
+QMenu::separator { height: 1px; background: #383838; margin: 4px 8px; }
+QStatusBar { background-color: #141414; border-top: 1px solid #383838; color: #6e6e6e; font-size: 9pt; }
+QToolTip { background-color: #262626; color: #ececec; border: 1px solid #6a4a30; border-radius: 5px; padding: 5px 9px; font-size: 9pt; }
 QScrollArea { background-color: transparent; border: none; }
-QScrollArea#latestSkuScrollArea { background-color: #111118; border: 1px solid #2e2e42; border-radius: 9px; }
-QWidget#latestSkuContainer { background-color: #111118; }
+QScrollArea#latestSkuScrollArea { background-color: #141414; border: 1px solid #383838; border-radius: 9px; }
+QWidget#latestSkuContainer { background-color: #141414; }
 QScrollBar:vertical { background: transparent; border: none; width: 8px; margin: 4px 2px; }
 QScrollBar:horizontal { background: transparent; border: none; height: 8px; margin: 2px 4px; }
-QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: #2e2e42; border-radius: 4px; min-height: 24px; min-width: 24px; }
-QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: #4a4a68; }
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: #383838; border-radius: 4px; min-height: 24px; min-width: 24px; }
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: #565656; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
-QLabel#searchImagePreviewLabel, QLabel#barcodePreviewLabel, QLabel#barcodeSkuImageLabel, QLabel#historySkuImageLabel, QLabel#companyLogoLabel { background-color: #16161f; border: 1px solid #2e2e42; border-radius: 8px; padding: 4px; }
+QLabel#searchImagePreviewLabel, QLabel#barcodePreviewLabel, QLabel#barcodeSkuImageLabel, QLabel#historySkuImageLabel, QLabel#companyLogoLabel { background-color: #1a1a1a; border: 1px solid #383838; border-radius: 8px; padding: 4px; }
 QLabel#softwareNameLabel { color: #ff7c38; font-size: 18px; font-weight: 700; }
-QLabel#companyNameLabel { color: #e8e8f0; font-weight: 700; }
-QLabel#authorLabel { color: #4a8af7; font-style: italic; }
-QFrame#metricTile, QFrame#skuCard { background-color: #16161f; border: 1px solid #2e2e42; border-radius: 10px; }
-QFrame#skuCard:hover { border-color: #ff7c38; background-color: #1c1c2a; }
-QLabel#metricTileTitle { color: #7878a0; font-size: 9pt; font-weight: 600; }
+QLabel#companyNameLabel { color: #eaeaea; font-weight: 700; }
+QLabel#authorLabel { color: #ff7c38; font-style: italic; }
+QFrame#metricTile, QFrame#skuCard { background-color: #1a1a1a; border: 1px solid #383838; border-radius: 10px; }
+QFrame#skuCard:hover { border-color: #ff7c38; background-color: #202020; }
+QLabel#metricTileTitle { color: #969696; font-size: 9pt; font-weight: 600; }
 QLabel#totalSkusValueLabel, QLabel#totalBarcodesValueLabel, QLabel#quarterBarcodesValueLabel, QLabel#sdSerialsValueLabel, QLabel#skSerialsValueLabel, QLabel#smSerialsValueLabel { font-size: 20px; font-weight: 700; }
 QLabel#totalSkusValueLabel, QLabel#skuCardSku { color: #ff7c38; }
-QLabel#totalBarcodesValueLabel { color: #4a8af7; }
+QLabel#totalBarcodesValueLabel { color: #ff7c38; }
 QLabel#sdSerialsValueLabel { color: #44c492; }
 QLabel#skSerialsValueLabel { color: #ffaa55; }
 QLabel#smSerialsValueLabel { color: #f06060; }
-QLabel#skuCardImage { background-color: #111118; border: 1px solid #2e2e42; border-radius: 6px; }
-QLabel#skuCardName { color: #e8e8f0; font-weight: 600; }
-QLabel#skuCardMeta { color: #7878a0; }
-QLabel#skuCardDate { color: #44445a; }
-QLabel#searchNotFoundLabel { color: #44445a; font-size: 13px; font-weight: 600; background: transparent; }
+QLabel#skuCardImage { background-color: #141414; border: 1px solid #383838; border-radius: 6px; }
+QLabel#skuCardName { color: #eaeaea; font-weight: 600; }
+QLabel#skuCardMeta { color: #969696; }
+QLabel#skuCardDate { color: #454545; }
+QLabel#searchNotFoundLabel { color: #454545; font-size: 13px; font-weight: 600; background: transparent; }
+QCheckBox, QRadioButton { spacing: 6px; }
+QCheckBox::indicator, QRadioButton::indicator { width: 15px; height: 15px; border: 1px solid #4a4a4a; background: #202020; border-radius: 4px; }
+QRadioButton::indicator { border-radius: 8px; }
+QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: #ff7c38; }
+QCheckBox::indicator:checked, QRadioButton::indicator:checked { background: #ff7c38; border-color: #ff7c38; }
+QMessageBox, QInputDialog { background-color: #1e1e1e; }
+QMessageBox QLabel, QInputDialog QLabel { color: #ececec; }
+QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button, QDateEdit::up-button, QDateEdit::down-button { background: #2a2a2a; border: none; width: 16px; }
+QSpinBox::up-button:hover, QSpinBox::down-button:hover, QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover, QDateEdit::up-button:hover, QDateEdit::down-button:hover { background: #3d3d3d; }
+QFrame#metricTile:hover { border-color: #4f4f4f; }
+QLabel#toastSuccessLabel { background-color: #10281a; color: #52d68a; border: 1px solid #2f7d4a; border-radius: 9px; padding: 11px 18px; font-weight: 600; font-size: 10.5pt; }
+QLabel#toastErrorLabel { background-color: #2b1214; color: #ff7a7a; border: 1px solid #8a2a2a; border-radius: 9px; padding: 11px 18px; font-weight: 600; font-size: 10.5pt; }
 )");
     m_darkStyleSheet = darkTheme;
-
-    // ── LIGHT THEME ───────────────────────────────────────────────────────────
-    // Soft white base with warm orange accents. Crisp, airy, professional.
-    // Palette: bg #f4f4fa · surface #ffffff · border #d4d4e8 · text #18182c
-    //          muted #5a5a80 · accent #dd6000 · blue #3b6ef0
-    m_lightStyleSheet = QStringLiteral(R"(
-QMainWindow { background-color: #f4f4fa; color: #18182c; }
-QWidget { color: #18182c; font-family: "Segoe UI", "Inter", sans-serif; font-size: 10pt; }
-QDialog { background-color: #ffffff; color: #18182c; }
-QGroupBox { background-color: #ffffff; border: 1px solid #d4d4e8; border-radius: 9px; margin-top: 20px; padding-top: 10px; }
-QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #dd6000; font-weight: 600; font-size: 9pt; }
-QLineEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox { background-color: #ffffff; border: 1px solid #d4d4e8; border-radius: 6px; padding: 6px 10px; color: #18182c; selection-background-color: #dd6000; selection-color: #ffffff; min-height: 16px; }
-QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border: 1.5px solid #3b6ef0; background-color: #fafafe; }
-QLineEdit:read-only { background-color: #f4f4fa; color: #5a5a80; }
-QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled { color: #aaaac0; background-color: #f0f0f8; border-color: #dcdcec; }
-QComboBox::drop-down { border: none; width: 22px; }
-QComboBox QAbstractItemView, QListView { background-color: #ffffff; border: 1px solid #d4d4e8; color: #18182c; selection-background-color: #dd6000; selection-color: #ffffff; padding: 2px; outline: none; }
-QTableView { background-color: #ffffff; alternate-background-color: #f8f8fd; gridline-color: #e8e8f4; border: 1px solid #d4d4e8; border-radius: 8px; color: #18182c; }
-QTableView::item { padding: 5px 8px; color: #18182c; }
-QTableView::item:hover { background-color: #f0f0f9; }
-QHeaderView::section, QTableCornerButton::section { background-color: #f4f4fa; color: #5a5a80; border: none; border-bottom: 1px solid #d4d4e8; border-right: 1px solid #d4d4e8; padding: 6px 8px; font-weight: 600; font-size: 9pt; }
-QHeaderView::section:last { border-right: none; }
-QPushButton { background-color: #ffffff; border: 1px solid #d4d4e8; border-radius: 6px; padding: 7px 14px; font-weight: 600; color: #18182c; min-height: 14px; }
-QPushButton:hover { background-color: #f0f0f9; border-color: #b4b4d0; }
-QPushButton:pressed { background-color: #e8e8f4; }
-QPushButton:disabled { background-color: #f4f4fa; color: #aaaac0; border-color: #dcdcec; }
-QPushButton#dashboardSearchButton, QPushButton#searchButton, QPushButton#generateBarcodeButton, QPushButton#saveButton, QPushButton#printBarcodeButton, QPushButton#backupDbButton, QPushButton#historyRefreshButton { background-color: #dd6000; border: none; border-radius: 6px; color: #ffffff; font-weight: 700; }
-QPushButton#dashboardSearchButton:hover, QPushButton#searchButton:hover, QPushButton#generateBarcodeButton:hover, QPushButton#saveButton:hover, QPushButton#printBarcodeButton:hover, QPushButton#backupDbButton:hover, QPushButton#historyRefreshButton:hover { background-color: #f07015; }
-QPushButton#dashboardSearchButton:pressed, QPushButton#searchButton:pressed, QPushButton#generateBarcodeButton:pressed, QPushButton#saveButton:pressed, QPushButton#printBarcodeButton:pressed, QPushButton#backupDbButton:pressed, QPushButton#historyRefreshButton:pressed { background-color: #b84c00; }
-QPushButton#dashboardSearchButton:disabled, QPushButton#searchButton:disabled, QPushButton#generateBarcodeButton:disabled, QPushButton#saveButton:disabled, QPushButton#printBarcodeButton:disabled { background-color: #f0e0d4; color: #c09878; border: none; }
-QPushButton#updateButton, QPushButton#fillFromSearchButton, QPushButton#historyEditButton, QPushButton#browseImageButton { background-color: #3b6ef0; border: none; border-radius: 6px; color: #ffffff; font-weight: 700; }
-QPushButton#updateButton:hover, QPushButton#fillFromSearchButton:hover, QPushButton#historyEditButton:hover, QPushButton#browseImageButton:hover { background-color: #5a88ff; }
-QPushButton#updateButton:pressed, QPushButton#fillFromSearchButton:pressed, QPushButton#historyEditButton:pressed, QPushButton#browseImageButton:pressed { background-color: #2350cc; }
-QPushButton#deleteSkuButton, QPushButton#deleteBarcodeButton, QPushButton#historyDeleteButton { background-color: #d43030; border: none; border-radius: 6px; color: #ffffff; font-weight: 700; }
-QPushButton#deleteSkuButton:hover, QPushButton#deleteBarcodeButton:hover, QPushButton#historyDeleteButton:hover { background-color: #e84848; }
-QPushButton#deleteSkuButton:pressed, QPushButton#deleteBarcodeButton:pressed, QPushButton#historyDeleteButton:pressed { background-color: #b01818; }
-QPushButton#clearSearchButton, QPushButton#clearFormButton, QPushButton#clearBarcodeFieldsButton, QPushButton#historyClearFieldsButton { background-color: transparent; border: 1px solid #d4d4e8; color: #7878a0; }
-QPushButton#clearSearchButton:hover, QPushButton#clearFormButton:hover, QPushButton#clearBarcodeFieldsButton:hover, QPushButton#historyClearFieldsButton:hover { background-color: #f0f0f9; color: #18182c; border-color: #b4b4d0; }
-QTabWidget::pane { border: 1px solid #d4d4e8; border-radius: 9px; top: -1px; background: #ffffff; }
-QTabBar::tab { background: transparent; color: #7878a0; padding: 8px 18px; border-top-left-radius: 7px; border-top-right-radius: 7px; margin-right: 2px; border: 1px solid transparent; font-weight: 600; font-size: 9.5pt; }
-QTabBar::tab:selected { background: #ffffff; color: #dd6000; border: 1px solid #d4d4e8; border-bottom-color: #ffffff; font-weight: 700; }
-QTabBar::tab:hover:!selected { background: #f0f0f9; color: #18182c; }
-QMenuBar { background-color: #f4f4fa; color: #18182c; border-bottom: 1px solid #d4d4e8; }
-QMenuBar::item { background: transparent; padding: 5px 10px; border-radius: 5px; }
-QMenuBar::item:selected { background: #e8e8f4; }
-QMenu { background-color: #ffffff; color: #18182c; border: 1px solid #d4d4e8; border-radius: 8px; padding: 4px 0; }
-QMenu::item { padding: 6px 20px; border-radius: 4px; margin: 1px 4px; }
-QMenu::item:selected { background: #f0f0f9; }
-QMenu::separator { height: 1px; background: #d4d4e8; margin: 4px 8px; }
-QStatusBar { background-color: #f4f4fa; border-top: 1px solid #d4d4e8; color: #9898b8; font-size: 9pt; }
-QToolTip { background-color: #ffffff; color: #18182c; border: 1px solid #d4d4e8; border-radius: 5px; padding: 4px 8px; font-size: 9pt; }
-QScrollArea { background-color: transparent; border: none; }
-QScrollArea#latestSkuScrollArea { background-color: #f4f4fa; border: 1px solid #d4d4e8; border-radius: 9px; }
-QWidget#latestSkuContainer { background-color: #f4f4fa; }
-QScrollBar:vertical { background: transparent; border: none; width: 8px; margin: 4px 2px; }
-QScrollBar:horizontal { background: transparent; border: none; height: 8px; margin: 2px 4px; }
-QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: #d4d4e8; border-radius: 4px; min-height: 24px; min-width: 24px; }
-QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: #aaaac8; }
-QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
-QLabel#searchImagePreviewLabel, QLabel#barcodePreviewLabel, QLabel#barcodeSkuImageLabel, QLabel#historySkuImageLabel, QLabel#companyLogoLabel { background-color: #f4f4fa; border: 1px solid #d4d4e8; border-radius: 8px; padding: 4px; }
-QLabel#softwareNameLabel { color: #dd6000; font-size: 18px; font-weight: 700; }
-QLabel#companyNameLabel { color: #18182c; font-weight: 700; }
-QLabel#authorLabel { color: #3b6ef0; font-style: italic; }
-QFrame#metricTile, QFrame#skuCard { background-color: #ffffff; border: 1px solid #d4d4e8; border-radius: 10px; }
-QFrame#skuCard:hover { border-color: #dd6000; background-color: #fffaf5; }
-QLabel#metricTileTitle { color: #7878a0; font-size: 9pt; font-weight: 600; }
-QLabel#totalSkusValueLabel, QLabel#totalBarcodesValueLabel, QLabel#quarterBarcodesValueLabel, QLabel#sdSerialsValueLabel, QLabel#skSerialsValueLabel, QLabel#smSerialsValueLabel { font-size: 20px; font-weight: 700; }
-QLabel#totalSkusValueLabel, QLabel#skuCardSku { color: #dd6000; }
-QLabel#totalBarcodesValueLabel { color: #3b6ef0; }
-QLabel#sdSerialsValueLabel { color: #1a9e6e; }
-QLabel#skSerialsValueLabel { color: #8c4a00; }
-QLabel#smSerialsValueLabel { color: #c02020; }
-QLabel#skuCardImage { background-color: #f4f4fa; border: 1px solid #d4d4e8; border-radius: 6px; }
-QLabel#skuCardName { color: #18182c; font-weight: 600; }
-QLabel#skuCardMeta { color: #7878a0; }
-QLabel#skuCardDate { color: #9898b8; }
-QLabel#searchNotFoundLabel { color: #9898b8; font-size: 13px; font-weight: 600; background: transparent; }
-)");
 
     m_mainTabs = ui->mainTabWidget;
 
@@ -3086,8 +3111,9 @@ QLabel#searchNotFoundLabel { color: #9898b8; font-size: 13px; font-weight: 600; 
         ui->metricsGridLayout->setContentsMargins(10, 10, 10, 10);
         ui->metricsGridLayout->setHorizontalSpacing(12);
         ui->metricsGridLayout->setVerticalSpacing(10);
-        ui->metricsGridLayout->setColumnStretch(0, 1);
-        ui->metricsGridLayout->setColumnStretch(1, 1);
+        for (int col = 0; col < 6; ++col) {
+            ui->metricsGridLayout->setColumnStretch(col, 1);
+        }
 
         auto createMetricTile = [&](const QString &titleText, const QString &valueObjectName, QLabel **valueTarget) {
             auto *tile = new QFrame(ui->metricsGroupBox);
@@ -3098,6 +3124,8 @@ QLabel#searchNotFoundLabel { color: #9898b8; font-size: 13px; font-weight: 600; 
 
             auto *titleLabel = new QLabel(titleText, tile);
             titleLabel->setObjectName("metricTileTitle");
+            titleLabel->setWordWrap(true);
+            titleLabel->setMinimumWidth(0);
 
             auto *valueLabel = new QLabel("0", tile);
             valueLabel->setObjectName(valueObjectName);
@@ -3127,10 +3155,8 @@ QLabel#searchNotFoundLabel { color: #9898b8; font-size: 13px; font-weight: 600; 
         };
 
         for (int i = 0; i < 6; ++i) {
-            const int row = i / 2;
-            const int col = i % 2;
             QFrame *tile = createMetricTile(tiles[i].title, tiles[i].valueObjectName, tiles[i].target);
-            ui->metricsGridLayout->addWidget(tile, row, col);
+            ui->metricsGridLayout->addWidget(tile, 0, i);
         }
     }
     m_companyLogoLabel = ui->companyLogoLabel;
@@ -3205,8 +3231,9 @@ QLabel#searchNotFoundLabel { color: #9898b8; font-size: 13px; font-weight: 600; 
     m_resultsView->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_resultsView->setSelectionMode(QAbstractItemView::SingleSelection);
     m_resultsView->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_resultsView->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_resultsView->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     m_resultsView->horizontalHeader()->setStretchLastSection(true);
+    m_resultsView->horizontalHeader()->setMinimumSectionSize(40);
     m_resultsView->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_resultsView->setContextMenuPolicy(Qt::CustomContextMenu);
 
@@ -3241,7 +3268,7 @@ QLabel#searchNotFoundLabel { color: #9898b8; font-size: 13px; font-weight: 600; 
     }
 
     m_imagePreview = ui->searchImagePreviewLabel;
-    m_imagePreview->setFixedSize(220, 220);
+    m_imagePreview->setFixedSize(compactUi ? 176 : 220, compactUi ? 176 : 220);
     m_imagePreview->setFrameShape(QFrame::StyledPanel);
     m_imagePreview->setAlignment(Qt::AlignCenter);
 
@@ -3316,15 +3343,15 @@ QLabel#searchNotFoundLabel { color: #9898b8; font-size: 13px; font-weight: 600; 
     m_barcodeNextSerialField->setReadOnly(true);
     m_barcodeNextSerialField->setText("1");
     m_barcodeValueField->setReadOnly(true);
-    m_barcodePreview->setFixedSize(160, 160);
+    m_barcodePreview->setFixedSize(compactUi ? 132 : 160, compactUi ? 132 : 160);
     m_barcodePreview->setFrameShape(QFrame::StyledPanel);
     m_barcodePreview->setAlignment(Qt::AlignCenter);
-    m_barcodeSkuImageLabel->setFixedSize(170, 170);
+    m_barcodeSkuImageLabel->setFixedSize(compactUi ? 140 : 170, compactUi ? 140 : 170);
     m_barcodeSkuImageLabel->setFrameShape(QFrame::StyledPanel);
     m_barcodeSkuImageLabel->setAlignment(Qt::AlignCenter);
     if (m_barcodeSkuDetailsGroupBox) {
         m_barcodeSkuDetailsGroupBox->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
-        m_barcodeSkuDetailsGroupBox->setMaximumHeight(230);
+        m_barcodeSkuDetailsGroupBox->setMaximumHeight(compactUi ? 196 : 230);
 
         auto registerClickTarget = [this](QWidget *widget) {
             if (!widget) {
@@ -3339,9 +3366,87 @@ QLabel#searchNotFoundLabel { color: #9898b8; font-size: 13px; font-weight: 600; 
             registerClickTarget(target);
         }
     }
-    m_historySkuImageLabel->setFixedSize(180, 180);
+    m_historySkuImageLabel->setFixedSize(compactUi ? 148 : 180, compactUi ? 148 : 180);
     m_historySkuImageLabel->setFrameShape(QFrame::StyledPanel);
     m_historySkuImageLabel->setAlignment(Qt::AlignCenter);
+
+    // ── TOOLTIPS ──────────────────────────────────────────────────────────────
+    // QR Code Generation tab
+    m_generateBarcodeButton->setToolTip(
+        "<b>Generate QR Codes</b><br>"
+        "Creates a batch of QR code labels for the selected SKU.<br>"
+        "<i>Step 1:</i> Select a SKU from the dropdown.<br>"
+        "<i>Step 2:</i> Choose the QR prefix (SD or SK) and quantity.<br>"
+        "<i>Step 3:</i> Verify the Quarter/Year, then click this button.");
+    m_printBarcodeButton->setToolTip(
+        "<b>Export QR Codes (PDF)</b><br>"
+        "Saves the last generated batch as a printable PDF label sheet.<br>"
+        "Generate codes first, then click here to choose a save location.");
+    m_deleteBarcodeButton->setToolTip(
+        "<b>Delete Selected Serials</b><br>"
+        "Permanently removes the selected serial records from this SKU.<br>"
+        "<i>Warning:</i> This requires admin authorization and a written reason.");
+    m_clearBarcodeFieldsButton->setToolTip(
+        "<b>Clear Fields</b><br>"
+        "Resets the QR generation form and clears the preview.<br>"
+        "Use this when switching to a different SKU or starting a new batch.");
+
+    // QR Code Manager tab
+    m_historyRefreshButton->setToolTip(
+        "<b>Load History</b><br>"
+        "Loads all generated serial records for the selected SKU.<br>"
+        "Select a SKU from the dropdown first, then click here.");
+    m_historyEditButton->setToolTip(
+        "<b>Edit Selected Serial</b><br>"
+        "Opens an editor to change the serial number, quarter, year, or date.<br>"
+        "<i>Warning:</i> Admin authorization and a written reason are required.");
+    m_historyDeleteButton->setToolTip(
+        "<b>Delete Selected Serials</b><br>"
+        "Soft-deletes the selected rows from the serial history.<br>"
+        "Select one or more rows first (hold Ctrl for multi-select).<br>"
+        "<i>Warning:</i> Admin authorization and a written reason are required.");
+    m_historyClearFieldsButton->setToolTip(
+        "<b>Clear Fields</b><br>"
+        "Resets the SKU selector, serial search filter, and detail panels.");
+
+    // SKU Generation tab
+    m_searchButton->setToolTip(
+        "<b>Search</b><br>"
+        "Searches the SKU catalog using the filters above.<br>"
+        "Leave all fields blank to load the full catalog.");
+    m_clearSearchButton->setToolTip(
+        "<b>Clear Search</b><br>"
+        "Clears all search filters and reloads the full results list.");
+    m_fillFromSearchButton->setToolTip(
+        "<b>Fill From Search</b><br>"
+        "Loads the selected search result into the form below for editing.<br>"
+        "Select a row in the results table first.");
+    m_saveButton->setToolTip(
+        "<b>Generate SKU and Update List</b><br>"
+        "Saves a new SKU record using the values in the form.<br>"
+        "<i>Required:</i> Part Name, Weight, Category, Sub-Category.");
+    m_updateButton->setToolTip(
+        "<b>Update Selected Record</b><br>"
+        "Saves your edits to the currently loaded SKU record.<br>"
+        "Use Fill From Search first to load a record, then edit and click here.");
+    m_deleteSkuButton->setToolTip(
+        "<b>Delete SKU</b><br>"
+        "Soft-deletes this SKU and all its associated serial records.<br>"
+        "<i>Warning:</i> Admin authorization and a written reason are required.");
+    m_clearFormButton->setToolTip(
+        "<b>Clear Forms</b><br>"
+        "Clears all form fields and the image preview.<br>"
+        "Use this before entering a brand new item.");
+    m_browseImageButton->setToolTip(
+        "<b>Browse Image</b><br>"
+        "Select a product photo to attach to this SKU.<br>"
+        "Supported formats: JPG, PNG, BMP, GIF.");
+
+    // Dashboard
+    m_backupDbButton->setToolTip(
+        "<b>Backup DB</b><br>"
+        "Exports a copy of the current database to a file you choose.<br>"
+        "Run this before major batch operations or at end of day.");
 
     const auto enableClearButton = [](QLineEdit *field) {
         if (field) {
@@ -3602,24 +3707,7 @@ QLabel#searchNotFoundLabel { color: #9898b8; font-size: 13px; font-weight: 600; 
     createMenusAndToolbars();
     registerUiInteractionLogging();
     m_printSettings.load();
-    QSettings settings;
-    const QString savedTheme = settings.value(themePreferenceKey(), "dark").toString().trimmed().toLower();
-    Theme startupTheme = Theme::Dark;
-    if (savedTheme == "light") {
-        startupTheme = Theme::Light;
-    } else if (savedTheme == "system") {
-        startupTheme = Theme::System;
-    }
-    applyTheme(startupTheme);
-#if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
-    if (qApp && qApp->styleHints()) {
-        connect(qApp->styleHints(), &QStyleHints::colorSchemeChanged, this, [this]() {
-            if (m_currentTheme == Theme::System) {
-                applyTheme(Theme::System);
-            }
-        });
-    }
-#endif
+    applyDarkTheme();
     updateNoDbBanner();
 }
 
@@ -3640,20 +3728,6 @@ void MainWindow::createMenusAndToolbars() {
     QMenu *viewMenu = menuBar()->addMenu("&View");
     m_actionFullScreen = viewMenu->addAction("Full Screen");
     m_actionFullScreen->setCheckable(true);
-    QMenu *themeMenu = viewMenu->addMenu("Theme");
-    auto *themeActionGroup = new QActionGroup(this);
-    themeActionGroup->setExclusive(true);
-    m_actionThemeDark = themeMenu->addAction("Dark");
-    m_actionThemeLight = themeMenu->addAction("Light");
-    m_actionThemeSystem = themeMenu->addAction("System");
-    QAction *themeActions[] = { m_actionThemeDark, m_actionThemeLight, m_actionThemeSystem };
-    for (QAction *action : themeActions) {
-        if (!action) {
-            continue;
-        }
-        action->setCheckable(true);
-        themeActionGroup->addAction(action);
-    }
 
     QMenu *optionsMenu = menuBar()->addMenu("&Options");
     m_actionPrintSettings = optionsMenu->addAction("QR Code / Sticker Settings...");
@@ -3666,6 +3740,28 @@ void MainWindow::createMenusAndToolbars() {
     QMenu *helpMenu = menuBar()->addMenu("&Help");
     m_actionHelpGuides = helpMenu->addAction("User and Technical Guides...");
     m_actionSkuReference = helpMenu->addAction("SKU Reference");
+    m_actionSkuMap = helpMenu->addAction("SKU MAP");
+
+    // Menu tooltips (menus only show them when explicitly enabled).
+    for (QMenu *menu : { fileMenu, viewMenu, optionsMenu, securityMenu, helpMenu }) {
+        menu->setToolTipsVisible(true);
+    }
+    m_actionLoadDb->setToolTip("Open an existing database file, or create a new one at a chosen location.");
+    m_actionRestoreBackup->setToolTip("Replace the current database with a previously exported backup file.");
+    m_actionExportDb->setToolTip("Save a copy of the current database to a file of your choice.");
+    m_actionSaveDb->setToolTip("Flush all pending changes to the database file on disk.");
+    m_actionExportSkuCsv->setToolTip("Export the SKU master list (SKU and Part Name) as a CSV file.");
+    m_actionExportBarcodeSummaryCsv->setToolTip("Export a per-SKU summary of generated QR serials as a CSV file.");
+    m_actionExportSerialsXls->setToolTip("Export every generated serial number to an Excel-compatible file.");
+    m_actionUninstall->setToolTip("Launch the uninstaller to remove the application from this computer.");
+    m_actionExit->setToolTip("Close the application.");
+    m_actionFullScreen->setToolTip("Toggle full-screen mode (recommended on small laptop displays).");
+    m_actionPrintSettings->setToolTip("Adjust QR sticker dimensions, margins, logo size and element positions.");
+    m_actionManageUsers->setToolTip("Create, edit or remove user accounts and their permissions.");
+    m_actionSwitchUser->setToolTip("Log out and sign in as a different user.");
+    m_actionHelpGuides->setToolTip("Read the built-in user guide and technical documentation.");
+    m_actionSkuReference->setToolTip("View the SKU numbering reference charts.");
+    m_actionSkuMap->setToolTip("Open the A0 warehouse SKU map diagram (PDF).");
 
     connect(m_actionLoadDb, &QAction::triggered, this, &MainWindow::onLoadDbTriggered);
     connect(m_actionRestoreBackup, &QAction::triggered, this, &MainWindow::onRestoreBackupTriggered);
@@ -3683,14 +3779,14 @@ void MainWindow::createMenusAndToolbars() {
     connect(m_actionUninstall, &QAction::triggered, this, &MainWindow::onUninstallTriggered);
     connect(m_actionExit, &QAction::triggered, this, &MainWindow::onExitTriggered);
     connect(m_actionFullScreen, &QAction::toggled, this, &MainWindow::onFullScreenToggled);
-    connect(m_actionThemeDark, &QAction::triggered, this, &MainWindow::onThemeDark);
-    connect(m_actionThemeLight, &QAction::triggered, this, &MainWindow::onThemeLight);
-    connect(m_actionThemeSystem, &QAction::triggered, this, &MainWindow::onThemeSystem);
     connect(m_actionPrintSettings, &QAction::triggered, this, &MainWindow::onPrintSettingsTriggered);
     connect(m_actionManageUsers, &QAction::triggered, this, &MainWindow::onManageUsersTriggered);
     connect(m_actionSwitchUser, &QAction::triggered, this, &MainWindow::onSwitchUserTriggered);
     connect(m_actionHelpGuides, &QAction::triggered, this, &MainWindow::onHelpGuidesTriggered);
     connect(m_actionSkuReference, &QAction::triggered, this, &MainWindow::onSkuReferenceTriggered);
+    if (m_actionSkuMap) {
+        connect(m_actionSkuMap, &QAction::triggered, this, &MainWindow::onSkuMapTriggered);
+    }
 }
 
 void MainWindow::syncRunLogIdentity() {
@@ -3782,14 +3878,12 @@ void MainWindow::registerUiInteractionLogging() {
     wireAction(m_actionUninstall, "actionUninstall");
     wireAction(m_actionExit, "actionExit");
     wireAction(m_actionFullScreen, "actionFullScreen");
-    wireAction(m_actionThemeDark, "actionThemeDark");
-    wireAction(m_actionThemeLight, "actionThemeLight");
-    wireAction(m_actionThemeSystem, "actionThemeSystem");
     wireAction(m_actionPrintSettings, "actionPrintSettings");
     wireAction(m_actionManageUsers, "actionManageUsers");
     wireAction(m_actionSwitchUser, "actionSwitchUser");
     wireAction(m_actionHelpGuides, "actionHelpGuides");
     wireAction(m_actionSkuReference, "actionSkuReference");
+    wireAction(m_actionSkuMap, "actionSkuMap");
 
     if (m_mainTabs) {
         connect(m_mainTabs, &QTabWidget::currentChanged, this, [this](int index) {
@@ -3801,15 +3895,11 @@ void MainWindow::registerUiInteractionLogging() {
     }
 }
 
-void MainWindow::applyTheme(Theme theme) {
-    // "System" preserves the operator's preference while resolving to one of our
-    // two curated palettes at runtime.
-    const bool useDarkTheme = (theme == Theme::System) ? systemPrefersDarkTheme()
-                                                       : (theme == Theme::Dark);
-    m_currentTheme = theme;
-    qApp->setStyleSheet(useDarkTheme ? m_darkStyleSheet : m_lightStyleSheet);
+void MainWindow::applyDarkTheme() {
+    // The app has a single fixed dark theme; there is no theme switcher.
+    qApp->setStyleSheet(m_darkStyleSheet);
 
-    const QString selectionStyle = tableSelectionStyleSheet(useDarkTheme);
+    const QString selectionStyle = tableSelectionStyleSheet();
     if (m_resultsView) {
         m_resultsView->setStyleSheet(selectionStyle);
     }
@@ -3820,35 +3910,13 @@ void MainWindow::applyTheme(Theme theme) {
         m_barcodeTableView->setStyleSheet(selectionStyle);
     }
     if (m_skuField) {
-        m_skuField->setStyleSheet(highlightedSkuFieldStyle(useDarkTheme));
+        m_skuField->setStyleSheet(highlightedSkuFieldStyle());
     }
     if (m_statusBarMessageLabel) {
         m_statusBarMessageLabel->setStyleSheet("QLabel { padding-left: 4px; }");
     }
     if (m_statusBarVersionLabel) {
-        m_statusBarVersionLabel->setStyleSheet(versionLabelStyle(useDarkTheme));
-    }
-
-    QSettings settings;
-    QString themeValue = "dark";
-    if (theme == Theme::Light) {
-        themeValue = "light";
-    } else if (theme == Theme::System) {
-        themeValue = "system";
-    }
-    settings.setValue(themePreferenceKey(), themeValue);
-
-    if (m_actionThemeDark) {
-        m_actionThemeDark->setChecked(theme == Theme::Dark);
-        m_actionThemeDark->setEnabled(theme != Theme::Dark);
-    }
-    if (m_actionThemeLight) {
-        m_actionThemeLight->setChecked(theme == Theme::Light);
-        m_actionThemeLight->setEnabled(theme != Theme::Light);
-    }
-    if (m_actionThemeSystem) {
-        m_actionThemeSystem->setChecked(theme == Theme::System);
-        m_actionThemeSystem->setEnabled(theme != Theme::System);
+        m_statusBarVersionLabel->setStyleSheet(versionLabelStyle());
     }
 }
 
@@ -5206,24 +5274,16 @@ void MainWindow::onFullScreenToggled(bool enabled) {
     }
 }
 
-void MainWindow::onThemeDark() {
-    applyTheme(Theme::Dark);
-}
-
-void MainWindow::onThemeLight() {
-    applyTheme(Theme::Light);
-}
-
-void MainWindow::onThemeSystem() {
-    applyTheme(Theme::System);
-}
-
 void MainWindow::onHelpGuidesTriggered() {
     showHelpGuidesDialog();
 }
 
 void MainWindow::onSkuReferenceTriggered() {
     showSkuReferenceDialog();
+}
+
+void MainWindow::onSkuMapTriggered() {
+    showSkuMapDocument();
 }
 
 void MainWindow::onPrintSettingsTriggered() {
@@ -5250,8 +5310,7 @@ void MainWindow::onSwitchUserTriggered() {
 void MainWindow::showHelpGuidesDialog() {
     QDialog dialog(this);
     dialog.setWindowTitle("Help");
-    dialog.setMinimumSize(900, 640);
-    dialog.resize(980, 700);
+    sizeDialogToScreen(&dialog, this, 980, 700, 900, 640);
 
     QVBoxLayout *layout = new QVBoxLayout(&dialog);
     layout->setContentsMargins(12, 12, 12, 12);
@@ -5330,8 +5389,7 @@ void MainWindow::showSkuReferenceDialog() {
     dialog->setWindowTitle("SKU Reference");
     dialog->setWindowFlag(Qt::WindowMaximizeButtonHint, true);
     dialog->setWindowFlag(Qt::WindowMinimizeButtonHint, true);
-    dialog->setMinimumSize(860, 620);
-    dialog->resize(980, 700);
+    sizeDialogToScreen(dialog, this, 980, 700, 860, 620);
 
     QVBoxLayout *layout = new QVBoxLayout(dialog);
     layout->setContentsMargins(12, 12, 12, 12);
@@ -5405,6 +5463,30 @@ void MainWindow::showSkuReferenceDialog() {
     dialog->show();
     dialog->raise();
     dialog->activateWindow();
+}
+
+void MainWindow::showSkuMapDocument() {
+    const QString fileName = QStringLiteral("A0_SKU_MAP_Diagram .pdf");
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QStringList candidates = {
+        QDir(appDir).filePath("Assets/" + fileName),
+        QDir(appDir).filePath("../Assets/" + fileName),
+        QDir(appDir).filePath("../../Assets/" + fileName),
+        QDir::current().filePath("Assets/" + fileName)
+    };
+
+    for (const QString &path : candidates) {
+        if (QFile::exists(path)) {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absoluteFilePath()));
+            return;
+        }
+    }
+
+    QString message = QString("SKU MAP file not found: %1\n\nSearched in:\n").arg(fileName);
+    for (const QString &path : candidates) {
+        message += " - " + QDir::toNativeSeparators(path) + '\n';
+    }
+    QMessageBox::warning(this, "SKU MAP", message);
 }
 
 bool MainWindow::initDb() {
@@ -6865,10 +6947,7 @@ void MainWindow::setStatus(const QString &message, bool ok) {
     if (m_statusLabel) {
         m_statusLabel->setText(text);
     }
-    const bool isDark = (m_currentTheme == Theme::Dark) ||
-                        (m_currentTheme == Theme::System && systemPrefersDarkTheme());
-    const QString color = ok ? (isDark ? "#3fb950" : "#1a7f37")
-                             : (isDark ? "#f85149" : "#cf222e");
+    const QString color = ok ? "#3fb950" : "#f85149";
     if (m_statusLabel) {
         m_statusLabel->setStyleSheet(QString("color: %1;").arg(color));
     }
@@ -6880,28 +6959,65 @@ void MainWindow::setStatus(const QString &message, bool ok) {
             m_statusBarMessageLabel->setStyleSheet(QString("QLabel { color: %1; padding-left: 4px; font-weight: 600; }").arg(color));
         }
     }
+    showToast(text, ok);
     updateNoDbBanner();
+}
+
+void MainWindow::showToast(const QString &message, bool ok) {
+    // Transient pop-up confirmation near the bottom of the window: green for
+    // success, red for failures. Auto-dismisses so it never blocks the operator.
+    const QString text = message.trimmed();
+    if (text.isEmpty() || !isVisible()) {
+        return;
+    }
+    if (!m_toastLabel) {
+        m_toastLabel = new QLabel(this);
+        m_toastLabel->setWordWrap(true);
+        m_toastLabel->setAlignment(Qt::AlignCenter);
+        m_toastLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_toastLabel->hide();
+    }
+    if (!m_toastTimer) {
+        m_toastTimer = new QTimer(this);
+        m_toastTimer->setSingleShot(true);
+        connect(m_toastTimer, &QTimer::timeout, this, [this]() {
+            if (m_toastLabel) {
+                m_toastLabel->hide();
+            }
+        });
+    }
+
+    m_toastLabel->setObjectName(ok ? "toastSuccessLabel" : "toastErrorLabel");
+    m_toastLabel->setText(QString("%1  %2").arg(ok ? QStringLiteral("✓") : QStringLiteral("⚠"), text));
+    // Re-polish so the object-name-based stylesheet rule is re-applied.
+    m_toastLabel->style()->unpolish(m_toastLabel);
+    m_toastLabel->style()->polish(m_toastLabel);
+
+    m_toastLabel->setMaximumWidth(qMax(280, width() / 2));
+    m_toastLabel->adjustSize();
+    const int x = (width() - m_toastLabel->width()) / 2;
+    const int y = height() - m_toastLabel->height() - 56;
+    m_toastLabel->move(qMax(0, x), qMax(0, y));
+    m_toastLabel->raise();
+    m_toastLabel->show();
+    m_toastTimer->start(ok ? 2600 : 4500);
 }
 
 void MainWindow::updateNoDbBanner() {
     if (!m_noDbBannerLabel) {
         return;
     }
-    const bool isDark = (m_currentTheme == Theme::Dark) ||
-                        (m_currentTheme == Theme::System && systemPrefersDarkTheme());
     if (m_db.isOpen()) {
         const QString activeDbPath = QDir::toNativeSeparators(m_db.databaseName().trimmed());
         const QString dbText = activeDbPath.isEmpty() ? QStringLiteral("Connected")
                                                       : QString("Connected: %1").arg(activeDbPath);
         m_noDbBannerLabel->setText(QString("Database status: %1").arg(dbText));
-        m_noDbBannerLabel->setStyleSheet(isDark
-            ? "QLabel#noDbBannerLabel { background-color: #0d2118; color: #3fb950; border: 1px solid #196c2e; border-radius: 8px; padding: 7px 12px; font-weight: 600; }"
-            : "QLabel#noDbBannerLabel { background-color: #dafbe1; color: #1a7f37; border: 1px solid #82cfaa; border-radius: 8px; padding: 7px 12px; font-weight: 600; }");
+        m_noDbBannerLabel->setStyleSheet(
+            "QLabel#noDbBannerLabel { background-color: #0d2118; color: #3fb950; border: 1px solid #196c2e; border-radius: 8px; padding: 7px 12px; font-weight: 600; }");
     } else {
         m_noDbBannerLabel->setText("Database status: Not connected. Use File \342\206\222 Load DB... to open or create a database.");
-        m_noDbBannerLabel->setStyleSheet(isDark
-            ? "QLabel#noDbBannerLabel { background-color: #2d1f00; color: #ffa657; border: 1px solid #7d4e00; border-radius: 8px; padding: 7px 12px; font-weight: 600; }"
-            : "QLabel#noDbBannerLabel { background-color: #fff8e5; color: #7d4e00; border: 1px solid #d4a72c; border-radius: 8px; padding: 7px 12px; font-weight: 600; }");
+        m_noDbBannerLabel->setStyleSheet(
+            "QLabel#noDbBannerLabel { background-color: #2d1f00; color: #ffa657; border: 1px solid #7d4e00; border-radius: 8px; padding: 7px 12px; font-weight: 600; }");
     }
     m_noDbBannerLabel->setVisible(true);
 }
@@ -6946,6 +7062,16 @@ void MainWindow::populateResultsModel(const QList<QStringList> &rows) {
     m_resultsView->resizeColumnsToContents();
     m_resultsView->setColumnHidden(0, true);
 
+    // Cap long-text columns so they don't dominate the view.
+    // Users can still drag column borders to resize freely.
+    static const int kMaxWideCol  = 220; // Description, Comments
+    static const int kMaxNameCol  = 190; // Part Name
+    for (int col : {4, 9, 17}) {
+        const int limit = (col == 4) ? kMaxNameCol : kMaxWideCol;
+        if (m_resultsView->columnWidth(col) > limit)
+            m_resultsView->setColumnWidth(col, limit);
+    }
+
     if (m_searchNotFoundLabel) {
         const bool noResults = rows.isEmpty();
         m_searchNotFoundLabel->setVisible(noResults);
@@ -6962,11 +7088,21 @@ void MainWindow::showResultsContextMenu(const QPoint &pos) {
     }
 
     QMenu menu(this);
-    QAction *copyCell = menu.addAction("Copy Cell");
-    QAction *copyRow = menu.addAction("Copy Row");
+    QAction *moreInfo   = menu.addAction(QIcon::fromTheme("dialog-information"), "More Information...");
+    menu.addSeparator();
+    QAction *copyCell   = menu.addAction("Copy Cell");
+    QAction *copyRow    = menu.addAction("Copy Row");
     QAction *copyColumn = menu.addAction("Copy Column");
     QAction *selectedAction = menu.exec(m_resultsView->viewport()->mapToGlobal(pos));
     if (!selectedAction) {
+        return;
+    }
+
+    if (selectedAction == moreInfo) {
+        const auto *skuItem = m_resultsModel->item(index.row(), 3); // SKU column
+        if (skuItem) {
+            showSkuDetailsDialog(skuItem->text());
+        }
         return;
     }
 

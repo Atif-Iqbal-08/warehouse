@@ -86,22 +86,14 @@ private slots:
     void onUninstallTriggered();
     void onExitTriggered();
     void onFullScreenToggled(bool enabled);
-    void onThemeDark();
-    void onThemeLight();
-    void onThemeSystem();
     void onHelpGuidesTriggered();
     void onSkuReferenceTriggered();
     void onPrintSettingsTriggered();
     void onManageUsersTriggered();
     void onSwitchUserTriggered();
+    void onSkuMapTriggered();
 
 private:
-    enum class Theme {
-        Dark,
-        Light,
-        System
-    };
-
     enum class UserRole {
         ViewOnly,
         AddOnly,
@@ -123,7 +115,8 @@ private:
     // UI composition and presentation.
     void setupUi();
     void createMenusAndToolbars();
-    void applyTheme(Theme theme);
+    void applyDarkTheme();
+    void showSkuMapDocument();
 
     // Authentication, authorization and role management.
     void applyAccessControl(const QString &roleKey);
@@ -281,6 +274,7 @@ protected:
     QString getVariationCode(int num) const;
 
     void setStatus(const QString &message, bool ok);
+    void showToast(const QString &message, bool ok);
     void updateNoDbBanner();
     void populateResultsModel(const QList<QStringList> &rows);
     void loadImagePreview(const QByteArray &data, const QString &legacyPath = QString());
@@ -307,6 +301,8 @@ protected:
     QLabel *m_statusBarMessageLabel = nullptr;
     QLabel *m_statusBarVersionLabel = nullptr;
     QLabel *m_noDbBannerLabel = nullptr;
+    QLabel *m_toastLabel = nullptr;
+    QTimer *m_toastTimer = nullptr;
 
     // SKU master form widgets.
     QLineEdit *m_skuField = nullptr;
@@ -394,8 +390,6 @@ protected:
     QString m_customDbPath;
     QString m_lastDatabaseOpenError;
     QString m_darkStyleSheet;
-    QString m_lightStyleSheet;
-    Theme m_currentTheme = Theme::Dark;
     PrintSettings m_printSettings;
 
     // Image payload cached while editing a SKU record.
@@ -413,15 +407,13 @@ protected:
     QAction *m_actionUninstall = nullptr;
     QAction *m_actionExit = nullptr;
     QAction *m_actionFullScreen = nullptr;
-    QAction *m_actionThemeDark = nullptr;
-    QAction *m_actionThemeLight = nullptr;
-    QAction *m_actionThemeSystem = nullptr;
     QAction *m_actionPrintSettings = nullptr;
     QAction *m_actionManageUsers = nullptr;
     QAction *m_actionSwitchUser = nullptr;
     QAction *m_actionSettings = nullptr;
     QAction *m_actionHelpGuides = nullptr;
     QAction *m_actionSkuReference = nullptr;
+    QAction *m_actionSkuMap = nullptr;
 
     int m_selectedId = 0;
     QString m_currentUsername;

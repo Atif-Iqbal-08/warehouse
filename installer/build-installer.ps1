@@ -2,7 +2,7 @@ param(
     [string]$BuildDir = "build-qmake",
     [string]$OutputDir = "dist",
     [string]$AppName = "Warehouse SKU Generator",
-    [string]$AppVersion = "1.0.0",
+    [string]$AppVersion = "1.1.0",
     [string]$Publisher = "Skylark Drones Pvt. Ltd",
     [string]$QtBinDir = "",
     [ValidateSet("Release", "Debug")]

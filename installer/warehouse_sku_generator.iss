@@ -3,7 +3,7 @@
 #endif
 
 #ifndef AppVersion
-#define AppVersion "1.0.0"
+#define AppVersion "1.1.0"
 #endif
 
 #ifndef Publisher
@@ -41,8 +41,20 @@ ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\warehouse_sku_generator.exe
 PrivilegesRequired=admin
 UsePreviousPrivileges=no
-DisableDirPage=no
+; In-place upgrade support: when the same AppId is already installed the
+; directory/start-menu pages are hidden (auto), the previous location, tasks
+; and settings are reused, and a running app instance is closed via the
+; Windows Restart Manager instead of forcing a manual uninstall.
+DisableDirPage=auto
+DisableProgramGroupPage=auto
 UsePreviousAppDir=yes
+UsePreviousGroup=yes
+UsePreviousTasks=yes
+CloseApplications=yes
+RestartApplications=no
+SetupMutex=WarehouseSKUGeneratorSetupMutex
+VersionInfoVersion={#AppVersion}
+VersionInfoDescription={#AppName} Setup
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"

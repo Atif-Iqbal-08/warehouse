@@ -9,12 +9,15 @@
 #include <QFontMetrics>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPen>
 #include <QPushButton>
+#include <QRect>
+#include <QScreen>
 #include <QSettings>
 #include <QVBoxLayout>
 
@@ -109,7 +112,6 @@ PrintSettingsDialog::PrintSettingsDialog(const PrintSettings &settings,
     , m_logoResolver(std::move(logoResolver)) {
     setWindowTitle("Sticker Print Settings");
     setModal(true);
-    setMinimumSize(740, 500);
 
     // ── spin-box factory ─────────────────────────────────────────────────
     auto makeSpinBox = [this](qreal minVal, qreal maxVal, qreal value) -> QDoubleSpinBox * {
@@ -261,6 +263,18 @@ PrintSettingsDialog::PrintSettingsDialog(const PrintSettings &settings,
     m_infoBlockPosYmm = m_settings.infoBlockPosYmm;
 
     updatePreview();
+
+    // Clamp to the available screen so that, on small/high-DPI-scaled displays
+    // (e.g. 14" laptops at 150% scaling), the bottom button row never ends up
+    // pushed off-screen by the dialog's natural content height.
+    const QScreen *dialogScreen = this->screen() ? this->screen() : QGuiApplication::primaryScreen();
+    if (dialogScreen) {
+        const QRect avail = dialogScreen->availableGeometry();
+        const int maxWidth = qMax(320, static_cast<int>(avail.width() * 0.92));
+        const int maxHeight = qMax(240, static_cast<int>(avail.height() * 0.88));
+        setMinimumSize(qMin(740, maxWidth), qMin(500, maxHeight));
+        resize(qMin(sizeHint().width(), maxWidth), qMin(sizeHint().height(), maxHeight));
+    }
 }
 
 // ── settings() ───────────────────────────────────────────────────────────────
